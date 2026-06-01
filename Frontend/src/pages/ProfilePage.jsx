@@ -141,36 +141,37 @@ export default function ProfilePage() {
 
   return (
     <div className="auth-layout">
-      <div className="auth-card" style={{ maxWidth: '500px' }}>
+      <div className="auth-card" style={{ maxWidth: '440px' }}>
         <button 
           onClick={() => navigate('/dashboard')}
-          className="btn-secondary"
-          style={{ width: 'auto', padding: '4px 12px', fontSize: '12px', marginBottom: '16px', borderRadius: '4px' }}
+          className="btn btn-secondary"
+          style={{ width: 'auto', padding: '4px 10px', fontSize: '11px', marginBottom: '14px' }}
         >
-          &larr; Back to Dashboard
+          ← Back
         </button>
 
-        <header className="auth-header">
+        <header className="auth-header" style={{ marginBottom: '20px' }}>
           <h1 className="auth-title">Profile Settings</h1>
           <p className="auth-subtitle">Update your public identity on StudyCord</p>
         </header>
 
         <form onSubmit={handleSave}>
-          <div className="form-group" style={{ textAlign: 'center', marginBottom: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '20px', padding: '12px', backgroundColor: 'var(--bg-elevated)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
             <div 
               style={{ 
-                width: '100px', 
-                height: '100px', 
+                width: '56px', 
+                height: '56px', 
                 borderRadius: '50%', 
-                backgroundColor: 'var(--bg-elevated)', 
-                margin: '0 auto 12px',
+                backgroundColor: 'var(--bg-darkest)', 
                 overflow: 'hidden',
-                border: '2px solid var(--border)',
+                border: '1px solid var(--border)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: '32px',
-                color: 'var(--text-muted)'
+                fontSize: '20px',
+                fontWeight: 600,
+                color: 'var(--text-muted)',
+                flexShrink: 0,
               }}
             >
               {avatarPreview ? (
@@ -179,10 +180,15 @@ export default function ProfilePage() {
                 profile.username?.[0]?.toUpperCase() || '?'
               )}
             </div>
-            <label className="btn btn-secondary" style={{ width: 'auto', padding: '6px 12px', fontSize: '12px', cursor: 'pointer' }}>
-              Change Avatar
-              <input type="file" accept="image/*" onChange={handleAvatarChange} style={{ display: 'none' }} />
-            </label>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+                {profile.username || 'Username'}
+              </div>
+              <label className="btn btn-secondary" style={{ width: 'auto', padding: '3px 10px', fontSize: '11px', cursor: 'pointer' }}>
+                Change Avatar
+                <input type="file" accept="image/*" onChange={handleAvatarChange} style={{ display: 'none' }} />
+              </label>
+            </div>
           </div>
 
           <div className="form-group">
