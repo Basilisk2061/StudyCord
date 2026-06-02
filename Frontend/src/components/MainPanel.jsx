@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 
 export default function MainPanel({
-  serverName, channelName, channelType, channelId, userEmail, profile,
+  serverName, channelName, channelType, userEmail, profile,
   onLogout, channelSidebarOpen, onToggleChannelSidebar, onMobileBack,
   serversCount, channelsCount,
 }) {

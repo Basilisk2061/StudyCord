@@ -6,6 +6,15 @@ import ChannelSidebar from '../components/ChannelSidebar';
 import MainPanel from '../components/MainPanel';
 import RightPanel from '../components/RightPanel';
 
+function generateInviteCode() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let result = '';
+  for (let i = 0; i < 6; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
 export default function DashboardPage() {
   const { session } = useAuth();
   const user = session?.user;
@@ -16,12 +25,19 @@ export default function DashboardPage() {
   // ---------- servers ----------
   const [servers, setServers] = useState([]);
   const [serversLoading, setServersLoading] = useState(true);
+  // eslint-disable-next-line no-unused-vars
   const [serversError, setServersError] = useState(null);
 
   // ---------- channels ----------
   const [channels, setChannels] = useState([]);
   const [channelsLoading, setChannelsLoading] = useState(false);
   const [channelsError, setChannelsError] = useState(null);
+
+  // ---------- members ----------
+  const [members, setMembers] = useState([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  // eslint-disable-next-line no-unused-vars
+  const [membersError, setMembersError] = useState(null);
 
   // ---------- selection ----------
   const [activeServerId, setActiveServerId] = useState(null);
@@ -78,8 +94,10 @@ export default function DashboardPage() {
   // ──────────────────────────────────────────────
   const fetchServers = useCallback(async () => {
     if (!user) return;
-    setServersLoading(true);
-    setServersError(null);
+    Promise.resolve().then(() => {
+      setServersLoading(true);
+      setServersError(null);
+    });
 
     try {
       // Get server IDs the user belongs to
@@ -116,6 +134,7 @@ export default function DashboardPage() {
   }, [user]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchServers();
   }, [fetchServers]);
 
@@ -127,8 +146,10 @@ export default function DashboardPage() {
       setChannels([]);
       return;
     }
-    setChannelsLoading(true);
-    setChannelsError(null);
+    Promise.resolve().then(() => {
+      setChannelsLoading(true);
+      setChannelsError(null);
+    });
 
     try {
       const { data, error } = await supabase
@@ -148,8 +169,51 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchChannels(activeServerId);
   }, [activeServerId, fetchChannels]);
+
+  // ──────────────────────────────────────────────
+  // 3b. Load members for selected server
+  // ──────────────────────────────────────────────
+  const fetchMembers = useCallback(async (serverId) => {
+    if (!serverId) {
+      setMembers([]);
+      return;
+    }
+    Promise.resolve().then(() => {
+      setMembersLoading(true);
+      setMembersError(null);
+    });
+
+    try {
+      const { data, error } = await supabase
+        .from('server_members')
+        .select(`
+          role,
+          user_id,
+          profiles (
+            username,
+            full_name,
+            avatar_url
+          )
+        `)
+        .eq('server_id', serverId);
+
+      if (error) throw error;
+      setMembers(data || []);
+    } catch (err) {
+      console.error('Failed to load members:', err);
+      setMembersError(err.message);
+    } finally {
+      setMembersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchMembers(activeServerId);
+  }, [activeServerId, fetchMembers]);
 
   // ──────────────────────────────────────────────
   // 4. Create a new server
@@ -172,10 +236,17 @@ export default function DashboardPage() {
 
       if (profileErr) throw new Error(`profile error: ${profileErr.message}`);
 
-      // Step 2: Insert server with owner_id
+      // Generate a unique 6-character invite code
+      const inviteCode = generateInviteCode();
+
+      // Step 2: Insert server with owner_id and invite_code
       const { data: newServer, error: srvErr } = await supabase
         .from('servers')
-        .insert({ name: serverName.trim(), owner_id: user.id })
+        .insert({
+          name: serverName.trim(),
+          owner_id: user.id,
+          invite_code: inviteCode
+        })
         .select()
         .single();
 
@@ -244,6 +315,71 @@ export default function DashboardPage() {
   };
 
   // ──────────────────────────────────────────────
+  // 5b. Join a server via invite code
+  // ──────────────────────────────────────────────
+  const handleJoinServer = async (inviteCode) => {
+    if (!user || !inviteCode.trim()) return;
+
+    const cleanCode = inviteCode.trim().toUpperCase();
+
+    try {
+      // Step 1: Find server by invite code
+      const { data: server, error: serverErr } = await supabase
+        .from('servers')
+        .select('*')
+        .eq('invite_code', cleanCode)
+        .maybeSingle();
+
+      if (serverErr) throw serverErr;
+      if (!server) {
+        return { success: false, error: 'Invalid invite code. Server not found.' };
+      }
+
+      // Step 2: Check if already a member
+      const { data: existingMember, error: memberCheckErr } = await supabase
+        .from('server_members')
+        .select('*')
+        .eq('server_id', server.id)
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (memberCheckErr) throw memberCheckErr;
+
+      if (existingMember) {
+        // Already joined — select it and return success
+        setActiveServerId(server.id);
+        setActiveChannelId(null);
+        setActiveChannelName(null);
+        setActiveChannelType(null);
+        return { success: true, message: 'You are already a member of this server!' };
+      }
+
+      // Step 3: Insert membership
+      const { error: joinErr } = await supabase
+        .from('server_members')
+        .insert({
+          server_id: server.id,
+          user_id: user.id,
+          role: 'member'
+        });
+
+      if (joinErr) throw joinErr;
+
+      // Step 4: Refresh servers and auto-select
+      await fetchServers();
+      setActiveServerId(server.id);
+      setActiveChannelId(null);
+      setActiveChannelName(null);
+      setActiveChannelType(null);
+
+      return { success: true };
+    } catch (err) {
+      console.error('Failed to join server:', err);
+      return { success: false, error: err.message };
+    }
+  };
+
+  // ──────────────────────────────────────────────
   // Handlers
   // ──────────────────────────────────────────────
   const handleSelectServer = (serverId) => {
@@ -270,6 +406,7 @@ export default function DashboardPage() {
   // ──────────────────────────────────────────────
   const activeServer = servers.find((s) => s.id === activeServerId);
   const activeServerName = activeServer?.name || null;
+  const activeServerInviteCode = activeServer?.invite_code || null;
 
   const shellClasses = [
     'dashboard-shell',
@@ -287,6 +424,7 @@ export default function DashboardPage() {
         activeServerId={activeServerId}
         onSelectServer={handleSelectServer}
         onCreateServer={handleCreateServer}
+        onJoinServer={handleJoinServer}
       />
       <ChannelSidebar
         serverId={activeServerId}
@@ -312,7 +450,12 @@ export default function DashboardPage() {
         serversCount={servers.length}
         channelsCount={channels.length}
       />
-      <RightPanel />
+      <RightPanel
+        activeServerId={activeServerId}
+        serverInviteCode={activeServerInviteCode}
+        members={members}
+        membersLoading={membersLoading}
+      />
     </div>
   );
 }

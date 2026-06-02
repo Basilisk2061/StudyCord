@@ -15,11 +15,17 @@ export default function ServerSidebar({
   activeServerId,
   onSelectServer,
   onCreateServer,
+  onJoinServer,
 }) {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newServerName, setNewServerName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(null);
+
+  const [showJoinModal, setShowJoinModal] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState(null);
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -38,6 +44,25 @@ export default function ServerSidebar({
     }
 
     setCreating(false);
+  };
+
+  const handleJoin = async (e) => {
+    e.preventDefault();
+    if (!inviteCode.trim()) return;
+
+    setJoining(true);
+    setJoinError(null);
+
+    const result = await onJoinServer(inviteCode);
+
+    if (result?.success) {
+      setInviteCode('');
+      setShowJoinModal(false);
+    } else {
+      setJoinError(result?.error || 'Failed to join server');
+    }
+
+    setJoining(false);
   };
 
   return (
@@ -93,6 +118,20 @@ export default function ServerSidebar({
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
         </div>
+
+        {/* Join server button */}
+        <div
+          className="server-icon server-icon--add"
+          title="Join Server"
+          onClick={() => setShowJoinModal(true)}
+          style={{ marginTop: 4 }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+            <polyline points="10 17 15 12 10 7" />
+            <line x1="15" y1="12" x2="3" y2="12" />
+          </svg>
+        </div>
       </aside>
 
       {/* ── Create Server Modal ── */}
@@ -142,6 +181,62 @@ export default function ServerSidebar({
                   style={{ width: 'auto', padding: '8px 18px' }}
                 >
                   {creating ? 'Creating…' : 'Create Server'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Join Server Modal ── */}
+      {showJoinModal && (
+        <div className="modal-overlay" onClick={() => setShowJoinModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-card__title">Join a Server</h3>
+            <p className="modal-card__desc">
+              Enter a 6-character invite code to join an existing study server.
+            </p>
+
+            <form onSubmit={handleJoin}>
+              <label className="form-label" htmlFor="join-code-input">
+                Invite Code
+              </label>
+              <input
+                id="join-code-input"
+                className="form-input"
+                type="text"
+                placeholder="e.g. AB12CD"
+                maxLength={10}
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value)}
+                autoFocus
+                disabled={joining}
+                style={{ textTransform: 'uppercase' }}
+              />
+
+              {joinError && (
+                <div className="error-message" style={{ marginTop: 12 }}>
+                  {joinError}
+                </div>
+              )}
+
+              <div className="modal-card__actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowJoinModal(false)}
+                  disabled={joining}
+                  style={{ width: 'auto', padding: '8px 18px' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={joining || !inviteCode.trim()}
+                  style={{ width: 'auto', padding: '8px 18px' }}
+                >
+                  {joining ? 'Joining…' : 'Join Server'}
                 </button>
               </div>
             </form>

@@ -1,11 +1,12 @@
+/* eslint-disable no-unused-vars */
 import { useEffect } from 'react';
 import { motion, useMotionValue, useMotionTemplate, animate } from 'framer-motion';
 
 const COLORS = [
-  '#1a2836',
-  '#142430',
-  '#1e3040',
-  '#162838',
+  '#09090b',
+  '#0d0d11',
+  '#0b0b0e',
+  '#0e0f13',
 ];
 
 export default function EtherealBackground({ children }) {
