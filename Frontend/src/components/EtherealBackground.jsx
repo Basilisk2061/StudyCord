@@ -3,10 +3,10 @@ import { useEffect } from 'react';
 import { motion, useMotionValue, useMotionTemplate, animate } from 'framer-motion';
 
 const COLORS = [
-  '#09090b',
-  '#0d0d11',
-  '#0b0b0e',
-  '#0e0f13',
+  '#000000',
+  '#050505',
+  '#0a0a0a',
+  '#0f0f0f',
 ];
 
 export default function EtherealBackground({ children }) {
