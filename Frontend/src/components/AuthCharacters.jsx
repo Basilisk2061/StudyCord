@@ -79,39 +79,39 @@ export default function AuthCharacters({ charState = 'idle' }) {
         transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
       >
         {/* ── Books (bottom layer) ── */}
-        <rect x="50" y="225" width="100" height="11" rx="3" fill="#5a6872" />
-        <rect x="55" y="213" width="90" height="11" rx="3" fill="#3d5f55" />
-        <rect x="58" y="201" width="84" height="11" rx="3" fill="#4d7a6e" />
+        <rect x="50" y="225" width="100" height="11" rx="3" fill="#4B5563" />
+        <rect x="55" y="213" width="90" height="11" rx="3" fill="#1F2937" />
+        <rect x="58" y="201" width="84" height="11" rx="3" fill="#374151" />
 
         {/* ── Feet ── */}
-        <ellipse cx="80" cy="198" rx="12" ry="5" fill="#4d7a6e" />
-        <ellipse cx="120" cy="198" rx="12" ry="5" fill="#4d7a6e" />
+        <ellipse cx="80" cy="198" rx="12" ry="5" fill="#374151" />
+        <ellipse cx="120" cy="198" rx="12" ry="5" fill="#374151" />
 
         {/* ── Body ── */}
-        <ellipse cx="100" cy="160" rx="46" ry="42" fill="#2a2d35" />
+        <ellipse cx="100" cy="160" rx="46" ry="42" fill="#262626" />
 
         {/* ── Belly ── */}
-        <ellipse cx="100" cy="168" rx="28" ry="25" fill="#353942" />
+        <ellipse cx="100" cy="168" rx="28" ry="25" fill="#373737" />
 
         {/* ── Wings (static, at body sides) ── */}
         <path
           d="M 58,132 C 40,148 36,175 48,192 C 52,195 56,188 55,178 C 52,158 54,142 58,132 Z"
-          fill="#22252d"
+          fill="#1C1C1C"
         />
         <path
           d="M 142,132 C 160,148 164,175 152,192 C 148,195 144,188 145,178 C 148,158 146,142 142,132 Z"
-          fill="#22252d"
+          fill="#1C1C1C"
         />
 
         {/* ── Ear tufts ── */}
-        <polygon points="62,45 75,18 87,48" fill="#2a2d35" />
-        <polygon points="113,48 125,18 138,45" fill="#2a2d35" />
+        <polygon points="62,45 75,18 87,48" fill="#262626" />
+        <polygon points="113,48 125,18 138,45" fill="#262626" />
 
         {/* ── Head ── */}
-        <circle cx="100" cy="78" r="46" fill="#2a2d35" />
+        <circle cx="100" cy="78" r="46" fill="#262626" />
 
         {/* ── Face disc (lighter inner area) ── */}
-        <circle cx="100" cy="82" r="34" fill="#353942" />
+        <circle cx="100" cy="82" r="34" fill="#373737" />
 
         {/* ── Eyes — conditionally rendered based on charState ── */}
         {isHiding ? (
@@ -123,29 +123,29 @@ export default function AuthCharacters({ charState = 'idle' }) {
         ) : isPeeking ? (
           /* Peeking — squinting/narrowed eyes */
           <>
-            <ellipse cx="82" cy="76" rx="14" ry="7" fill="#e0dbd4" />
-            <circle cx={82 + eyeOffset.x * 0.5} cy={76} r="5" fill="#1a1d24" />
+            <ellipse cx="82" cy="76" rx="14" ry="7" fill="#FFFFFF" />
+            <circle cx={82 + eyeOffset.x * 0.5} cy={76} r="5" fill="#000000" />
             <circle cx={84 + eyeOffset.x * 0.3} cy={74} r="1.5" fill="#fff" />
 
-            <ellipse cx="118" cy="76" rx="14" ry="7" fill="#e0dbd4" />
-            <circle cx={118 + eyeOffset.x * 0.5} cy={76} r="5" fill="#1a1d24" />
+            <ellipse cx="118" cy="76" rx="14" ry="7" fill="#FFFFFF" />
+            <circle cx={118 + eyeOffset.x * 0.5} cy={76} r="5" fill="#000000" />
             <circle cx={120 + eyeOffset.x * 0.3} cy={74} r="1.5" fill="#fff" />
           </>
         ) : (
           /* Normal open eyes with tracking pupils */
           <>
-            <circle cx="82" cy="76" r="14" fill="#e0dbd4" />
-            <circle cx={82 + eyeOffset.x} cy={76 + eyeOffset.y} r="7" fill="#1a1d24" />
+            <circle cx="82" cy="76" r="14" fill="#FFFFFF" />
+            <circle cx={82 + eyeOffset.x} cy={76 + eyeOffset.y} r="7" fill="#000000" />
             <circle cx={85 + eyeOffset.x * 0.5} cy={73 + eyeOffset.y * 0.5} r="2.5" fill="#fff" />
 
-            <circle cx="118" cy="76" r="14" fill="#e0dbd4" />
-            <circle cx={118 + eyeOffset.x} cy={76 + eyeOffset.y} r="7" fill="#1a1d24" />
+            <circle cx="118" cy="76" r="14" fill="#FFFFFF" />
+            <circle cx={118 + eyeOffset.x} cy={76 + eyeOffset.y} r="7" fill="#000000" />
             <circle cx={121 + eyeOffset.x * 0.5} cy={73 + eyeOffset.y * 0.5} r="2.5" fill="#fff" />
           </>
         )}
 
         {/* ── Beak ── */}
-        <polygon points="95,94 100,103 105,94" fill="#4d7a6e" />
+        <polygon points="95,94 100,103 105,94" fill="#FFFFFF" />
 
         {/* ── Smile ── */}
         <path
@@ -169,18 +169,18 @@ export default function AuthCharacters({ charState = 'idle' }) {
               transition={{ duration: 0.35, ease: 'easeOut' }}
             >
               {/* Left hand */}
-              <rect x="56" y="62" width="34" height="24" rx="12" fill="#242830" />
+              <rect x="56" y="62" width="34" height="24" rx="12" fill="#1C1C1C" />
               {/* Left finger bumps */}
-              <circle cx="64" cy="62" r="5.5" fill="#242830" />
-              <circle cx="76" cy="60" r="5.5" fill="#242830" />
-              <circle cx="87" cy="62" r="5.5" fill="#242830" />
+              <circle cx="64" cy="62" r="5.5" fill="#1C1C1C" />
+              <circle cx="76" cy="60" r="5.5" fill="#1C1C1C" />
+              <circle cx="87" cy="62" r="5.5" fill="#1C1C1C" />
 
               {/* Right hand */}
-              <rect x="110" y="62" width="34" height="24" rx="12" fill="#242830" />
+              <rect x="110" y="62" width="34" height="24" rx="12" fill="#1C1C1C" />
               {/* Right finger bumps */}
-              <circle cx="113" cy="62" r="5.5" fill="#242830" />
-              <circle cx="124" cy="60" r="5.5" fill="#242830" />
-              <circle cx="136" cy="62" r="5.5" fill="#242830" />
+              <circle cx="113" cy="62" r="5.5" fill="#1C1C1C" />
+              <circle cx="124" cy="60" r="5.5" fill="#1C1C1C" />
+              <circle cx="136" cy="62" r="5.5" fill="#1C1C1C" />
             </motion.g>
           )}
         </AnimatePresence>
