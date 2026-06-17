@@ -145,18 +145,18 @@ export default function ProfilePage() {
         <button 
           onClick={() => navigate('/dashboard')}
           className="btn btn-secondary"
-          style={{ width: 'auto', padding: '4px 10px', fontSize: '11px', marginBottom: '14px' }}
+          style={{ width: 'auto', padding: '6px 12px', fontSize: '12px', marginBottom: '16px', borderRadius: 'var(--radius-xs)' }}
         >
           ← Back
         </button>
 
-        <header className="auth-header" style={{ marginBottom: '20px' }}>
+        <header className="auth-header" style={{ marginBottom: '24px' }}>
           <h1 className="auth-title">Profile Settings</h1>
           <p className="auth-subtitle">Update your public identity on StudyCord</p>
         </header>
 
         <form onSubmit={handleSave}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '20px', padding: '12px', backgroundColor: 'var(--bg-elevated)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px', padding: '16px', backgroundColor: 'var(--bg-elevated)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
             <div 
               style={{ 
                 width: '56px', 
@@ -169,8 +169,8 @@ export default function ProfilePage() {
                 alignItems: 'center',
                 justifyContent: 'center',
                 fontSize: '20px',
-                fontWeight: 600,
-                color: 'var(--text-muted)',
+                fontWeight: 500,
+                color: 'var(--text-primary)',
                 flexShrink: 0,
               }}
             >
@@ -181,10 +181,10 @@ export default function ProfilePage() {
               )}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+              <div style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', marginBottom: '6px' }}>
                 {profile.username || 'Username'}
               </div>
-              <label className="btn btn-secondary" style={{ width: 'auto', padding: '3px 10px', fontSize: '11px', cursor: 'pointer' }}>
+              <label className="btn btn-secondary" style={{ width: 'auto', padding: '6px 12px', fontSize: '12px', cursor: 'pointer', borderRadius: 'var(--radius-xs)' }}>
                 Change Avatar
                 <input type="file" accept="image/*" onChange={handleAvatarChange} style={{ display: 'none' }} />
               </label>

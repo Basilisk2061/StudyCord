@@ -6,7 +6,7 @@ const SUGGESTED_PROMPTS = [
   'Summarize sorting algorithms',
 ];
 
-const AVATAR_COLORS = ['#4d7a6e', '#5a6872', '#64748b', '#3d5f55', '#455a64', '#5c6bc0'];
+const AVATAR_COLORS = ['#262626', '#2F2F2F', '#404040', '#525252', '#737373', '#A3A3A3'];
 
 function getInitials(name) {
   if (!name) return '?';
@@ -80,13 +80,13 @@ export default function RightPanel({
                 style={{
                   flex: 1,
                   padding: '6px 10px',
-                  backgroundColor: '#1A1A1A',
-                  border: '1px solid #475569',
+                  backgroundColor: 'var(--bg-elevated)',
+                  border: '1px solid var(--border)',
                   borderRadius: 'var(--radius-sm)',
                   fontFamily: 'monospace',
                   fontSize: '13px',
-                  fontWeight: '600',
-                  color: '#F3F4F6',
+                  fontWeight: '500',
+                  color: 'var(--text-primary)',
                   letterSpacing: '0.05em',
                   textAlign: 'center',
                   userSelect: 'all',
@@ -102,9 +102,9 @@ export default function RightPanel({
                   width: 'auto',
                   padding: '6px 12px',
                   fontSize: '11px',
-                  backgroundColor: copied ? 'var(--accent-subtle)' : 'transparent',
-                  borderColor: copied ? 'var(--accent)' : 'var(--border)',
-                  color: copied ? 'var(--accent)' : 'var(--text-secondary)',
+                  backgroundColor: copied ? '#FFFFFF' : 'transparent',
+                  borderColor: copied ? '#FFFFFF' : 'var(--border)',
+                  color: copied ? '#000000' : 'var(--text-primary)',
                   transition: 'all 0.15s ease',
                 }}
               >

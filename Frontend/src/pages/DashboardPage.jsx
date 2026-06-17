@@ -449,6 +449,8 @@ export default function DashboardPage() {
         onMobileBack={() => setMobilePanelView('sidebar')}
         serversCount={servers.length}
         channelsCount={channels.length}
+        activeServerId={activeServerId}
+        userId={user?.id}
       />
       <RightPanel
         activeServerId={activeServerId}
