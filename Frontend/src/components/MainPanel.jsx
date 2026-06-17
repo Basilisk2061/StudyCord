@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 
@@ -54,6 +54,54 @@ export default function MainPanel({
     loadMessages();
   }, [channelId]);
 
+  // ---------- Supabase Realtime subscription ----------
+  useEffect(() => {
+    if (!channelId) return;
+
+    const channel = supabase
+      .channel(`messages:channel_id=eq.${channelId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `channel_id=eq.${channelId}`,
+        },
+        async (payload) => {
+          const newMsg = payload.new;
+
+          // Fetch sender profile
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('username, avatar_url')
+            .eq('id', newMsg.user_id)
+            .single();
+
+          const enrichedMsg = {
+            ...newMsg,
+            profiles: profileData || { username: 'Unknown', avatar_url: null },
+          };
+
+          setMessages((prev) => {
+            // Avoid duplicates (e.g. own message already added by send handler)
+            if (prev.some((m) => m.id === enrichedMsg.id)) return prev;
+
+            // Insert in correct order by created_at
+            const updated = [...prev, enrichedMsg].sort(
+              (a, b) => new Date(a.created_at) - new Date(b.created_at)
+            );
+            return updated;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [channelId]);
+
   // ---------- scroll to bottom when messages change ----------
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -83,31 +131,8 @@ export default function MainPanel({
       return;
     }
 
-    // Clear input
+    // Clear input — realtime subscription will append the new message
     setMessageText('');
-
-    // Reload messages
-    const { data, error: fetchError } = await supabase
-      .from('messages')
-      .select(`
-        id,
-        content,
-        created_at,
-        user_id,
-        profiles (
-          username,
-          avatar_url
-        )
-      `)
-      .eq('channel_id', channelId)
-      .order('created_at', { ascending: true });
-
-    if (fetchError) {
-      console.error('Failed to reload messages:', fetchError);
-    } else {
-      setMessages(data || []);
-    }
-
     setSending(false);
   };
 
