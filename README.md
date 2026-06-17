@@ -1,67 +1,86 @@
 # StudyCord
 
-A collaborative learning platform designed to help students study together efficiently.
+A collaborative learning platform designed to make studying together easier and more productive.
 
-## 📋 Project Overview
+## 🚀 Overview
 
-StudyCord is a web application built to facilitate group studying and collaborative learning. Connect with study partners, share resources, and achieve academic goals together.
+StudyCord is a React + Vite web application for group study sessions, collaborative resource sharing, and community-driven learning.
+
+## 🧩 What’s Included
+
+- `Frontend/` - React application built with Vite
+- `Backend/` - backend folder available for API or server logic
+- `README.md` - project documentation and quick start instructions
 
 ## 🛠️ Tech Stack
 
-The project is built with the following technologies:
+- React
+- Vite
+- JavaScript
+- CSS
+- Supabase
+- React Router DOM
+- Axios
+- Framer Motion
 
-- **JavaScript** - 72.2%
-- **CSS** - 27.4%
-- **HTML** - 0.4%
+## ✅ Prerequisites
 
-## 📁 Project Structure
+- Node.js 18+ or later
+- npm
 
-- `Frontend/` - React + Vite frontend application
-- Root configurations and documentation
+## 📥 Install Dependencies
 
-## 🚀 Getting Started
+From the repository root:
 
-### Prerequisites
-
-- Node.js
-- npm or yarn
-
-### Installation
-
-1. Clone the repository
 ```bash
 git clone https://github.com/Basilisk2061/StudyCord.git
 cd StudyCord
 ```
 
-2. Install dependencies
-```bash
-npm install
-```
+Then install frontend dependencies:
 
-3. Navigate to the Frontend directory
 ```bash
 cd Frontend
 npm install
 ```
 
-### Development
+## ▶️ Run Locally
 
-To start the development server:
+Start the frontend development server:
 
 ```bash
 cd Frontend
 npm run dev
 ```
 
-## 📝 License
+Open the address shown in the terminal (usually `http://localhost:5173`).
 
-This project is open source and available under the MIT License.
+## 📦 Build for Production
+
+```bash
+cd Frontend
+npm run build
+```
+
+Preview the production build locally:
+
+```bash
+cd Frontend
+npm run preview
+```
+
+## 📁 Frontend Structure
+
+- `src/` - React application source files
+- `src/components/` - reusable UI components
+- `src/pages/` - application pages and routes
+- `src/lib/` - app utilities and Supabase client
+- `public/` - static assets
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions and improvements are welcome. Please open an issue or create a pull request with your changes.
 
----
+## 📄 License
 
-*StudyCord - Study smarter, together!*
+This project is open source and available under the MIT License.
