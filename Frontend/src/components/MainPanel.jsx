@@ -1,12 +1,232 @@
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
 
 export default function MainPanel({
-  serverName, channelName, channelType, userEmail, profile,
+  serverName, channelName, channelType, channelId, userEmail, profile,
   onLogout, channelSidebarOpen, onToggleChannelSidebar, onMobileBack,
-  serversCount, channelsCount,
+  serversCount, channelsCount, activeServerId, userId,
 }) {
   const navigate = useNavigate();
   const hasChannel = channelName && serverName;
+
+  // ---------- messages state ----------
+  const [messages, setMessages] = useState([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messageText, setMessageText] = useState('');
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  // ---------- fetch messages when channel changes ----------
+  useEffect(() => {
+    if (!channelId) {
+      setMessages([]);
+      return;
+    }
+
+    const loadMessages = async () => {
+      setMessagesLoading(true);
+
+      const { data, error } = await supabase
+        .from('messages')
+        .select(`
+          id,
+          content,
+          created_at,
+          user_id,
+          profiles (
+            username,
+            avatar_url
+          )
+        `)
+        .eq('channel_id', channelId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Failed to load messages:', error);
+      } else {
+        setMessages(data || []);
+      }
+
+      setMessagesLoading(false);
+    };
+
+    loadMessages();
+  }, [channelId]);
+
+  // ---------- scroll to bottom when messages change ----------
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // ---------- send a message ----------
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+
+    const trimmed = messageText.trim();
+    if (!trimmed || !channelId || !activeServerId || !userId) return;
+
+    setSending(true);
+
+    const { error } = await supabase
+      .from('messages')
+      .insert({
+        server_id: activeServerId,
+        channel_id: channelId,
+        user_id: userId,
+        content: trimmed,
+      });
+
+    if (error) {
+      console.error('Failed to send message:', error);
+      setSending(false);
+      return;
+    }
+
+    // Clear input
+    setMessageText('');
+
+    // Reload messages
+    const { data, error: fetchError } = await supabase
+      .from('messages')
+      .select(`
+        id,
+        content,
+        created_at,
+        user_id,
+        profiles (
+          username,
+          avatar_url
+        )
+      `)
+      .eq('channel_id', channelId)
+      .order('created_at', { ascending: true });
+
+    if (fetchError) {
+      console.error('Failed to reload messages:', fetchError);
+    } else {
+      setMessages(data || []);
+    }
+
+    setSending(false);
+  };
+
+  // ---------- format timestamp ----------
+  const formatTime = (dateString) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+
+    const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    if (isToday) return `Today at ${time}`;
+
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (date.toDateString() === yesterday.toDateString()) return `Yesterday at ${time}`;
+
+    return `${date.toLocaleDateString()} ${time}`;
+  };
+
+  // ---------- get date label for separator ----------
+  const getDateLabel = (dateString) => {
+    const date = new Date(dateString);
+    const now = new Date();
+
+    if (date.toDateString() === now.toDateString()) return 'Today';
+
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+
+    return date.toLocaleDateString(undefined, {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    });
+  };
+
+  // ---------- build messages with date separators ----------
+  const renderMessages = () => {
+    if (messagesLoading) {
+      return (
+        <div className="main-panel__placeholder">
+          <div className="main-panel__placeholder-icon">
+            <svg className="spinner-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+          </div>
+          <p className="main-panel__placeholder-text">Loading messages…</p>
+        </div>
+      );
+    }
+
+    if (messages.length === 0) {
+      return (
+        <div className="main-panel__placeholder">
+          <div className="main-panel__placeholder-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+          </div>
+          <h3 className="main-panel__placeholder-title"># {channelName}</h3>
+          <p className="main-panel__placeholder-text">
+            This is the start of the channel. Send a message to get the conversation going!
+          </p>
+        </div>
+      );
+    }
+
+    const items = [];
+    let lastDateLabel = null;
+
+    messages.forEach((msg) => {
+      const dateLabel = getDateLabel(msg.created_at);
+
+      // Insert a date separator when the day changes
+      if (dateLabel !== lastDateLabel) {
+        items.push(
+          <div className="message-date-sep" key={`sep-${msg.id}`}>
+            <div className="message-date-sep__line" />
+            <span className="message-date-sep__label">{dateLabel}</span>
+            <div className="message-date-sep__line" />
+          </div>
+        );
+        lastDateLabel = dateLabel;
+      }
+
+      const username = msg.profiles?.username || 'Unknown';
+      const avatarUrl = msg.profiles?.avatar_url;
+      const initial = username[0]?.toUpperCase() || '?';
+
+      items.push(
+        <div className="message-row" key={msg.id} id={`message-${msg.id}`}>
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt={username}
+              className="message-avatar"
+              style={{ objectFit: 'cover' }}
+            />
+          ) : (
+            <div
+              className="message-avatar"
+              style={{ backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            >
+              {initial}
+            </div>
+          )}
+          <div className="message-body">
+            <div className="message-header">
+              <span className="message-author">{username}</span>
+              <span className="message-time">{formatTime(msg.created_at)}</span>
+            </div>
+            <div className="message-text">{msg.content}</div>
+          </div>
+        </div>
+      );
+    });
+
+    return items;
+  };
 
   return (
     <section className="main-panel" id="main-panel">
@@ -84,37 +304,47 @@ export default function MainPanel({
       <div className="main-panel__body">
         {hasChannel ? (
           <>
-            {/* Selected channel info — chat will be built later */}
-            <div className="main-panel__placeholder">
-              <div className="main-panel__placeholder-icon">
-                {channelType === 'voice' ? (
-                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                  </svg>
-                ) : (
-                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                  </svg>
-                )}
-              </div>
-              <h3 className="main-panel__placeholder-title">
-                {channelType === 'voice' ? `Voice: ${channelName}` : `# ${channelName}`}
-              </h3>
-              <p className="main-panel__placeholder-text">
-                {channelType === 'voice'
-                  ? 'Voice channels will be available once real-time features are connected.'
-                  : 'Chat will be connected in the next phase. This channel is ready!'}
-              </p>
+            {/* Messages area */}
+            <div className="main-panel__messages">
+              {renderMessages()}
+              <div ref={messagesEndRef} />
             </div>
 
-            {/* Compose bar (read-only for now) */}
+            {/* Compose bar */}
             <div className="main-panel__compose">
-              <div className="compose-bar">
-                <button className="compose-bar__add" title="Attach file">+</button>
-                <input className="compose-bar__input" type="text" placeholder={`Message #${channelName}`} readOnly />
-              </div>
+              <form className="compose-bar" onSubmit={handleSendMessage}>
+                <button type="button" className="compose-bar__add" title="Attach file">+</button>
+                <input
+                  id="message-input"
+                  className="compose-bar__input"
+                  type="text"
+                  placeholder={`Message #${channelName}`}
+                  value={messageText}
+                  onChange={(e) => setMessageText(e.target.value)}
+                  disabled={sending}
+                  autoComplete="off"
+                />
+                <button
+                  type="submit"
+                  className="compose-bar__send"
+                  disabled={!messageText.trim() || sending}
+                  title="Send message"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: messageText.trim() ? 'var(--text-primary)' : 'var(--text-muted)',
+                    cursor: messageText.trim() ? 'pointer' : 'default',
+                    padding: '4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    transition: 'color 0.15s ease',
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                  </svg>
+                </button>
+              </form>
             </div>
           </>
         ) : (
