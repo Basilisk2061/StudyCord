@@ -579,6 +579,285 @@ body {
 .message-time { font-size: 10px; color: var(--text-muted); }
 .message-text { font-size: 13px; color: var(--text-secondary); line-height: 1.5; word-break: break-word; }
 
+/* ===================== MESSAGE ATTACHMENTS ===================== */
+
+/* -- Image attachment -- */
+.attachment-image {
+  position: relative;
+  display: inline-block;
+  margin-top: 6px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  max-width: 320px;
+  border: 1px solid var(--border);
+  transition: border-color var(--transition);
+}
+.attachment-image:hover {
+  border-color: var(--border-subtle);
+}
+.attachment-image__img {
+  display: block;
+  max-width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  background-color: var(--bg-elevated);
+}
+.attachment-image__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  color: #fff;
+}
+.attachment-image:hover .attachment-image__overlay {
+  opacity: 1;
+}
+
+/* -- Lightbox -- */
+.attachment-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background-color: rgba(0, 0, 0, 0.88);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 0.15s ease forwards;
+}
+.attachment-lightbox__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.attachment-lightbox__close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.attachment-lightbox__img {
+  max-width: 90vw;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+.attachment-lightbox__info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.attachment-lightbox__download {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 11px;
+  text-decoration: none;
+  transition: background-color 0.15s ease;
+}
+.attachment-lightbox__download:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* -- Document attachment -- */
+.attachment-doc {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 10px 14px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  max-width: 360px;
+  transition: border-color var(--transition);
+}
+.attachment-doc:hover {
+  border-color: var(--border-subtle);
+}
+.attachment-doc__icon {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-surface);
+  border-radius: var(--radius-xs);
+  border: 1px solid;
+}
+.attachment-doc__badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 3px;
+  border-radius: 2px;
+  color: #fff;
+  line-height: 1;
+}
+.attachment-doc__info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+}
+.attachment-doc__name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attachment-doc__meta {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.attachment-doc__download {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all var(--transition);
+}
+.attachment-doc__download:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+/* -- Compose file preview strip -- */
+.compose-file-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  margin: 0 16px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  animation: fadeIn 0.15s ease forwards;
+}
+.compose-file-preview__thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-xs);
+  object-fit: cover;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.compose-file-preview__doc-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-surface);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.compose-file-preview__name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.compose-file-preview__size {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.compose-file-preview__remove {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.compose-file-preview__remove:hover {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--error-color);
+}
+
+/* -- Upload error banner -- */
+.compose-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  margin: 0 16px 4px;
+  background-color: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--error-color);
+  animation: fadeIn 0.15s ease forwards;
+}
+.compose-error__dismiss {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--error-color);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 2px;
+  opacity: 0.6;
+  transition: opacity var(--transition);
+}
+.compose-error__dismiss:hover {
+  opacity: 1;
+}
+
 /* Date separator */
 .message-date-sep {
   display: flex; align-items: center; gap: 12px;

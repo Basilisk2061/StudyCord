@@ -1,6 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import MessageAttachment from './MessageAttachment';
+
+// ---------- constants ----------
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const ALLOWED_TYPES = [
+  'image/png', 'image/jpg', 'image/jpeg', 'image/gif', 'image/webp',
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain',
+];
+const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.docx', '.pptx', '.txt'];
 
 export default function MainPanel({
   serverName, channelName, channelType, channelId, userEmail, profile,
@@ -16,6 +28,32 @@ export default function MainPanel({
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef(null);
+
+  // ---------- file attachment state ----------
+  const fileInputRef = useRef(null);
+  const [pendingFile, setPendingFile] = useState(null);     // File object to upload
+  const [filePreview, setFilePreview] = useState(null);      // preview URL for images
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+
+  // ---------- fetch attachments for a list of message IDs ----------
+  const fetchAttachments = async (messageIds) => {
+    if (!messageIds.length) return {};
+    const { data, error } = await supabase
+      .from('message_attachments')
+      .select('*')
+      .in('message_id', messageIds);
+    if (error) {
+      console.error('Failed to fetch attachments:', error);
+      return {};
+    }
+    // Map: message_id -> attachment
+    const map = {};
+    (data || []).forEach((att) => {
+      map[att.message_id] = att;
+    });
+    return map;
+  };
 
   // ---------- fetch messages when channel changes ----------
   useEffect(() => {
@@ -45,7 +83,15 @@ export default function MainPanel({
       if (error) {
         console.error('Failed to load messages:', error);
       } else {
-        setMessages(data || []);
+        // Fetch attachments for all loaded messages
+        const ids = (data || []).map((m) => m.id);
+        const attMap = await fetchAttachments(ids);
+
+        const enriched = (data || []).map((m) => ({
+          ...m,
+          attachment: attMap[m.id] || null,
+        }));
+        setMessages(enriched);
       }
 
       setMessagesLoading(false);
@@ -78,9 +124,17 @@ export default function MainPanel({
             .eq('id', newMsg.user_id)
             .single();
 
+          // Fetch attachment if any (small delay to let insert propagate)
+          const { data: attData } = await supabase
+            .from('message_attachments')
+            .select('*')
+            .eq('message_id', newMsg.id)
+            .maybeSingle();
+
           const enrichedMsg = {
             ...newMsg,
             profiles: profileData || { username: 'Unknown', avatar_url: null },
+            attachment: attData || null,
           };
 
           setMessages((prev) => {
@@ -107,33 +161,159 @@ export default function MainPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // ---------- send a message ----------
+  // ---------- clean up file preview URL on unmount / change ----------
+  useEffect(() => {
+    return () => {
+      if (filePreview) URL.revokeObjectURL(filePreview);
+    };
+  }, [filePreview]);
+
+  // ---------- handle file selection ----------
+  const handleFileSelect = (e) => {
+    setUploadError('');
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate extension
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      setUploadError(`Unsupported file type: ${ext}. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`);
+      e.target.value = '';
+      return;
+    }
+
+    // Validate size
+    if (file.size > MAX_FILE_SIZE) {
+      setUploadError(`File is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum is 10 MB.`);
+      e.target.value = '';
+      return;
+    }
+
+    setPendingFile(file);
+
+    // Create preview for images
+    if (file.type.startsWith('image/')) {
+      setFilePreview(URL.createObjectURL(file));
+    } else {
+      setFilePreview(null);
+    }
+
+    // Reset input so same file can be re-selected
+    e.target.value = '';
+  };
+
+  // ---------- clear pending file ----------
+  const clearPendingFile = () => {
+    setPendingFile(null);
+    if (filePreview) {
+      URL.revokeObjectURL(filePreview);
+      setFilePreview(null);
+    }
+    setUploadError('');
+  };
+
+  // ---------- send a message (text and/or file) ----------
   const handleSendMessage = async (e) => {
     e.preventDefault();
 
     const trimmed = messageText.trim();
-    if (!trimmed || !channelId || !activeServerId || !userId) return;
+    const hasText = !!trimmed;
+    const hasFile = !!pendingFile;
+
+    // Need at least text or file
+    if ((!hasText && !hasFile) || !channelId || !activeServerId || !userId) return;
 
     setSending(true);
+    setUploading(hasFile);
+    setUploadError('');
 
-    const { error } = await supabase
-      .from('messages')
-      .insert({
-        server_id: activeServerId,
-        channel_id: channelId,
-        user_id: userId,
-        content: trimmed,
-      });
+    try {
+      let fileUrl = null;
+      let storagePath = null;
 
-    if (error) {
-      console.error('Failed to send message:', error);
-      setSending(false);
-      return;
+      // ---- Upload file first ----
+      if (hasFile) {
+        const timestamp = Date.now();
+        const safeName = pendingFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        storagePath = `${activeServerId}/${channelId}/${userId}/${timestamp}-${safeName}`;
+
+        const { error: uploadErr } = await supabase.storage
+          .from('channel-files')
+          .upload(storagePath, pendingFile);
+
+        if (uploadErr) {
+          console.error('Upload failed:', uploadErr);
+          setUploadError('Failed to upload file. Please try again.');
+          setSending(false);
+          setUploading(false);
+          return;
+        }
+
+        // Get public URL
+        const { data: urlData } = supabase.storage
+          .from('channel-files')
+          .getPublicUrl(storagePath);
+
+        fileUrl = urlData?.publicUrl;
+      }
+
+      // ---- Create message row ----
+      const messageContent = hasText
+        ? trimmed
+        : (hasFile ? `📎 ${pendingFile.name}` : '');
+
+      const { data: msgData, error: msgErr } = await supabase
+        .from('messages')
+        .insert({
+          server_id: activeServerId,
+          channel_id: channelId,
+          user_id: userId,
+          content: messageContent,
+        })
+        .select()
+        .single();
+
+      if (msgErr) {
+        console.error('Failed to send message:', msgErr);
+        setUploadError('Failed to send message. Please try again.');
+        setSending(false);
+        setUploading(false);
+        return;
+      }
+
+      // ---- Create attachment row ----
+      if (hasFile && msgData) {
+        const { error: attErr } = await supabase
+          .from('message_attachments')
+          .insert({
+            message_id: msgData.id,
+            server_id: activeServerId,
+            channel_id: channelId,
+            user_id: userId,
+            file_name: pendingFile.name,
+            file_url: fileUrl,
+            file_type: pendingFile.type,
+            file_size: pendingFile.size,
+            storage_path: storagePath,
+          });
+
+        if (attErr) {
+          console.error('Failed to save attachment record:', attErr);
+          // message was still sent, just no attachment record
+        }
+      }
+
+      // ---- Clear inputs ----
+      setMessageText('');
+      clearPendingFile();
+
+    } catch (err) {
+      console.error('Unexpected error sending message:', err);
+      setUploadError('Something went wrong. Please try again.');
     }
 
-    // Clear input — realtime subscription will append the new message
-    setMessageText('');
     setSending(false);
+    setUploading(false);
   };
 
   // ---------- format timestamp ----------
@@ -244,7 +424,12 @@ export default function MainPanel({
               <span className="message-author">{username}</span>
               <span className="message-time">{formatTime(msg.created_at)}</span>
             </div>
-            <div className="message-text">{msg.content}</div>
+            {msg.content && (
+              <div className="message-text">{msg.content}</div>
+            )}
+            {msg.attachment && (
+              <MessageAttachment attachment={msg.attachment} />
+            )}
           </div>
         </div>
       );
@@ -252,6 +437,13 @@ export default function MainPanel({
 
     return items;
   };
+
+  // ---------- derive pretty name for pending file ----------
+  const pendingFileLabel = pendingFile
+    ? (pendingFile.name.length > 28
+        ? pendingFile.name.slice(0, 24) + '…' + pendingFile.name.slice(pendingFile.name.lastIndexOf('.'))
+        : pendingFile.name)
+    : '';
 
   return (
     <section className="main-panel" id="main-panel">
@@ -335,39 +527,109 @@ export default function MainPanel({
               <div ref={messagesEndRef} />
             </div>
 
+            {/* Upload error */}
+            {uploadError && (
+              <div className="compose-error">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="15" y1="9" x2="9" y2="15" />
+                  <line x1="9" y1="9" x2="15" y2="15" />
+                </svg>
+                <span>{uploadError}</span>
+                <button className="compose-error__dismiss" onClick={() => setUploadError('')} aria-label="Dismiss">×</button>
+              </div>
+            )}
+
+            {/* Pending file preview */}
+            {pendingFile && (
+              <div className="compose-file-preview">
+                {filePreview ? (
+                  <img src={filePreview} alt="preview" className="compose-file-preview__thumb" />
+                ) : (
+                  <div className="compose-file-preview__doc-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                  </div>
+                )}
+                <span className="compose-file-preview__name">{pendingFileLabel}</span>
+                <span className="compose-file-preview__size">
+                  {(pendingFile.size / 1024).toFixed(0)} KB
+                </span>
+                <button className="compose-file-preview__remove" onClick={clearPendingFile} title="Remove file" aria-label="Remove file">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
             {/* Compose bar */}
             <div className="main-panel__compose">
               <form className="compose-bar" onSubmit={handleSendMessage}>
-                <button type="button" className="compose-bar__add" title="Attach file">+</button>
+                {/* Hidden file input */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={ALLOWED_EXTENSIONS.join(',')}
+                  onChange={handleFileSelect}
+                  style={{ display: 'none' }}
+                  id="file-attach-input"
+                />
+
+                {/* Attach button */}
+                <button
+                  type="button"
+                  className="compose-bar__add"
+                  title="Attach file"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </button>
+
                 <input
                   id="message-input"
                   className="compose-bar__input"
                   type="text"
-                  placeholder={`Message #${channelName}`}
+                  placeholder={pendingFile ? `Add a message with ${pendingFileLabel}…` : `Message #${channelName}`}
                   value={messageText}
                   onChange={(e) => setMessageText(e.target.value)}
                   disabled={sending}
                   autoComplete="off"
                 />
+
+                {/* Upload spinner or send icon */}
                 <button
                   type="submit"
                   className="compose-bar__send"
-                  disabled={!messageText.trim() || sending}
-                  title="Send message"
+                  disabled={(!messageText.trim() && !pendingFile) || sending}
+                  title={uploading ? 'Uploading…' : 'Send message'}
                   style={{
                     background: 'transparent',
                     border: 'none',
-                    color: messageText.trim() ? 'var(--text-primary)' : 'var(--text-muted)',
-                    cursor: messageText.trim() ? 'pointer' : 'default',
+                    color: (messageText.trim() || pendingFile) ? 'var(--text-primary)' : 'var(--text-muted)',
+                    cursor: (messageText.trim() || pendingFile) ? 'pointer' : 'default',
                     padding: '4px',
                     display: 'flex',
                     alignItems: 'center',
                     transition: 'color 0.15s ease',
                   }}
                 >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-                  </svg>
+                  {uploading ? (
+                    <svg className="spinner-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                    </svg>
+                  ) : (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                    </svg>
+                  )}
                 </button>
               </form>
             </div>
