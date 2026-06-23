@@ -67,6 +67,23 @@ export default function RightPanel({
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
 
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  // Escape key close listener
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setIsExpanded(false);
+      }
+    };
+    if (isExpanded) {
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isExpanded]);
+
   const handleCopy = () => {
     if (!serverInviteCode) return;
     navigator.clipboard.writeText(serverInviteCode);
@@ -532,13 +549,484 @@ export default function RightPanel({
           background-color: rgba(239, 68, 68, 0.1);
           color: #f87171;
         }
+
+        /* Workspace Modal */
+        .ai-workspace-modal {
+          position: fixed;
+          inset: 0;
+          z-index: 1000;
+          background-color: rgba(0, 0, 0, 0.7);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          animation: fadeIn 0.2s ease-out forwards;
+        }
+        .ai-workspace-card {
+          width: 90vw;
+          height: 90vh;
+          background-color: var(--bg-dark);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-lg);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+          animation: scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes scaleIn {
+          from { opacity: 0; transform: scale(0.97) translateY(12px); }
+          to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .ai-workspace-header {
+          height: 56px;
+          padding: 0 20px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          border-bottom: 1px solid var(--border);
+          background-color: var(--bg-panel1);
+        }
+        .ai-workspace-header__left {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .ai-workspace-title {
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: #FFF;
+          margin: 0;
+        }
+        .ai-workspace-docname {
+          font-size: 11px;
+          color: var(--text-muted);
+          background-color: var(--bg-elevated);
+          padding: 2px 8px;
+          border-radius: var(--radius-xs);
+          border: 1px solid var(--border);
+        }
+        .ai-workspace-close {
+          background: transparent;
+          border: none;
+          color: var(--text-muted);
+          font-size: 28px;
+          cursor: pointer;
+          transition: color var(--transition);
+          padding: 0;
+          display: flex;
+          align-items: center;
+          line-height: 1;
+        }
+        .ai-workspace-close:hover {
+          color: #FFF;
+        }
+        .ai-workspace-body {
+          flex: 1;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+        }
+        .ai-workspace-split {
+          display: flex;
+          height: 100%;
+          width: 100%;
+        }
+        .ai-workspace-tabs {
+          width: 200px;
+          background-color: var(--bg-panel1);
+          border-right: 1px solid var(--border);
+          padding: 20px 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .ai-workspace-tab-btn {
+          width: 100%;
+          text-align: left;
+          padding: 10px 14px;
+          font-size: 12px;
+          font-weight: 500;
+          border: 1px solid transparent;
+          background: transparent;
+          color: var(--text-muted);
+          cursor: pointer;
+          border-radius: var(--radius-sm);
+          transition: all var(--transition);
+        }
+        .ai-workspace-tab-btn:hover {
+          background-color: var(--bg-hover);
+          color: var(--text-primary);
+        }
+        .ai-workspace-tab-btn--active {
+          background-color: var(--bg-hover);
+          border-color: var(--border);
+          color: #FFF;
+          font-weight: 600;
+        }
+        .ai-workspace-content {
+          flex: 1;
+          background-color: var(--bg-dark);
+          padding: 24px;
+          overflow: hidden;
+          height: 100%;
+          position: relative;
+        }
+        .ai-workspace-content > div {
+          height: 100%;
+          animation: tabFadeIn 0.25s ease-out forwards;
+        }
+        @keyframes tabFadeIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .ai-workspace-summary, .ai-workspace-chat, .ai-workspace-flashcards, .ai-workspace-mcqs {
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+        }
+        .ai-workspace-loading {
+          text-align: center;
+          font-size: 13px;
+          color: var(--text-muted);
+          margin-top: 48px;
+        }
+        
+        /* Chat tab fullscreen */
+        .ai-workspace-chat {
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          background-color: var(--bg-dark);
+          border-radius: var(--radius-md);
+        }
+        .ai-chat-messages {
+          flex: 1;
+          overflow-y: auto;
+          padding-right: 12px;
+          margin-bottom: 20px;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .ai-chat-messages::-webkit-scrollbar {
+          width: 4px;
+        }
+        .ai-chat-messages::-webkit-scrollbar-thumb {
+          background-color: var(--border);
+          border-radius: 2px;
+        }
+        .ai-message {
+          display: flex;
+          gap: 12px;
+          max-width: 80%;
+          animation: messageSlide 0.2s ease-out forwards;
+        }
+        @keyframes messageSlide {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .ai-message--ai {
+          align-self: flex-start;
+        }
+        .ai-message--user {
+          align-self: flex-end;
+          flex-direction: row-reverse;
+        }
+        .ai-message__avatar {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          background-color: var(--bg-elevated);
+          border: 1px solid var(--border);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 600;
+          font-size: 11px;
+          flex-shrink: 0;
+          color: var(--text-secondary);
+        }
+        .ai-message__bubble {
+          padding: 12px 16px;
+          border-radius: var(--radius-md);
+          line-height: 1.5;
+          font-size: 13.5px;
+          word-break: break-word;
+        }
+        .ai-message--ai .ai-message__bubble {
+          background-color: var(--bg-surface);
+          border: 1px solid var(--border);
+          color: var(--text-secondary);
+          border-top-left-radius: 2px;
+        }
+        .ai-message--user .ai-message__bubble {
+          background-color: #FFFFFF;
+          color: #000000;
+          border-top-right-radius: 2px;
+          font-weight: 450;
+        }
+        .ai-message__time {
+          font-size: 10px;
+          color: var(--text-dark);
+          margin-top: 4px;
+          display: block;
+        }
+        .ai-message--user .ai-message__time {
+          text-align: right;
+        }
+        /* Typing Indicator */
+        .ai-typing-indicator {
+          display: flex;
+          gap: 4px;
+          align-items: center;
+          padding: 12px 16px;
+          background-color: var(--bg-surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-md);
+          border-top-left-radius: 2px;
+          width: fit-content;
+          align-self: flex-start;
+          margin-left: 44px;
+        }
+        .ai-typing-dot {
+          width: 6px;
+          height: 6px;
+          background-color: var(--text-muted);
+          border-radius: 50%;
+          animation: bounce 1.4s infinite ease-in-out both;
+        }
+        .ai-typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .ai-typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1.0); } }
+        
+        .ai-chat-compose {
+          display: flex;
+          gap: 10px;
+          background-color: var(--bg-surface);
+          padding: 6px;
+          border: 1px solid var(--border);
+          border-radius: var(--radius-md);
+        }
+        .ai-chat-input {
+          flex: 1;
+          background: transparent;
+          border: none;
+          color: var(--text-primary);
+          font-size: 13.5px;
+          padding: 10px 14px;
+          outline: none;
+        }
+        .ai-chat-submit {
+          padding: 10px 20px;
+          font-size: 12.5px;
+          font-weight: 600;
+          border: none;
+          border-radius: var(--radius-sm);
+          background-color: #FFFFFF;
+          color: #000000;
+          cursor: pointer;
+          transition: background-color var(--transition);
+        }
+        .ai-chat-submit:hover:not(:disabled) {
+          background-color: var(--accent-hover);
+        }
+        .ai-chat-submit:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+
+        /* Flashcards tab fullscreen */
+        .ai-workspace-flashcards {
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+        }
+        .ai-flashcard-container {
+          perspective: 1200px;
+          margin-bottom: 24px;
+        }
+        .ai-flashcard {
+          width: 100%;
+          height: 100%;
+          position: relative;
+          transform-style: preserve-3d;
+          transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+          cursor: pointer;
+        }
+        .ai-flashcard:hover {
+          transform: translateY(-4px);
+          box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+        }
+        .ai-flashcard--flipped {
+          transform: rotateY(180deg) translateY(-4px);
+        }
+        .ai-flashcard__side {
+          position: absolute;
+          width: 100%;
+          height: 100%;
+          backface-visibility: hidden;
+          border-radius: var(--radius-lg);
+          border: 1px solid var(--border);
+          padding: 32px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+          transition: border-color var(--transition);
+        }
+        .ai-flashcard__front {
+          background-color: var(--bg-surface);
+          color: #FFFFFF;
+        }
+        .ai-flashcard__back {
+          background-color: var(--bg-elevated);
+          color: var(--text-secondary);
+          transform: rotateY(180deg);
+          border-color: var(--border-subtle);
+        }
+        .ai-flashcard__label {
+          font-size: 9.5px;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          color: var(--text-muted);
+          margin-bottom: 16px;
+        }
+        .ai-flashcard__content {
+          font-size: 17px;
+          font-weight: 500;
+          line-height: 1.6;
+          margin: 0;
+          max-width: 90%;
+        }
+        .ai-flashcard-controls {
+          display: flex;
+          align-items: center;
+          gap: 20px;
+        }
+
+        /* MCQ tab fullscreen */
+        .ai-workspace-mcq-progress {
+          margin-bottom: 24px;
+          background-color: var(--bg-surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-md);
+          padding: 16px 20px;
+        }
+        .ai-workspace-mcq-progress__bar-bg {
+          height: 6px;
+          width: 100%;
+          background-color: var(--bg-darkest);
+          border-radius: 3px;
+          margin-top: 8px;
+          overflow: hidden;
+        }
+        .ai-workspace-mcq-progress__bar-fill {
+          height: 100%;
+          background-color: #FFFFFF;
+          border-radius: 3px;
+          transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .ai-workspace-mcq-item-card {
+          background-color: var(--bg-surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-md);
+          padding: 24px;
+          margin-bottom: 24px;
+          transition: border-color var(--transition);
+        }
+        .ai-workspace-mcq-item-card:hover {
+          border-color: var(--border-subtle);
+        }
+        .ai-workspace-mcq-question {
+          font-size: 15px;
+          font-weight: 600;
+          margin: 0 0 18px 0;
+          line-height: 1.5;
+          color: #FFFFFF;
+        }
+        .ai-workspace-mcq-options {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+          gap: 12px;
+          margin-bottom: 20px;
+        }
+        .ai-workspace-mcq-option-btn {
+          display: flex;
+          align-items: center;
+          padding: 14px 18px;
+          border-radius: var(--radius-sm);
+          border: 1px solid var(--border);
+          background-color: var(--bg-darkest);
+          cursor: pointer;
+          font-size: 13px;
+          transition: all var(--transition);
+          color: var(--text-secondary);
+        }
+        .ai-workspace-mcq-option-btn:hover:not(.ai-workspace-mcq-option-btn--disabled) {
+          border-color: var(--text-muted);
+          background-color: var(--bg-hover);
+          color: #FFFFFF;
+        }
+        .ai-workspace-mcq-option-btn--selected {
+          border-color: #FFFFFF;
+          background-color: var(--bg-hover);
+          color: #FFFFFF;
+          font-weight: 500;
+        }
+        .ai-workspace-mcq-option-btn--correct {
+          border-color: rgba(34, 197, 94, 0.5);
+          background-color: rgba(34, 197, 94, 0.1);
+          color: #4ade80 !important;
+          font-weight: 500;
+        }
+        .ai-workspace-mcq-option-btn--incorrect {
+          border-color: rgba(239, 68, 68, 0.5);
+          background-color: rgba(239, 68, 68, 0.1);
+          color: #f87171 !important;
+        }
+        .ai-workspace-mcq-option-btn--disabled {
+          cursor: default;
+        }
       `}} />
 
       {/* ── AI STUDY ASSISTANT (Top Section) ── */}
       <div className="right-panel__section ai-assistant-wrapper">
-        <h3 className="right-panel__section-title">
-          {uploadedDoc ? 'AI Study Assistant' : 'AI Study Helper'}
-        </h3>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+          <h3 className="right-panel__section-title" style={{ margin: 0 }}>
+            {uploadedDoc ? 'AI Study Assistant' : 'AI Study Helper'}
+          </h3>
+          <button 
+            className="ai-expand-btn"
+            title="Expand Workspace"
+            onClick={() => setIsExpanded(true)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '2px',
+              transition: 'color var(--transition)'
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 3 21 3 21 9" />
+              <polyline points="9 21 3 21 3 15" />
+              <line x1="21" y1="3" x2="14" y2="10" />
+              <line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+          </button>
+        </div>
 
         {uploadError && (
           <div className="error-message" style={{ padding: '6px 10px', fontSize: '11px', marginBottom: '10px' }}>
@@ -980,6 +1468,359 @@ export default function RightPanel({
           <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
             Select a study server and channel to view shared resources.
           </p>
+        </div>
+      )}
+
+      {/* ── AI STUDY ASSISTANT FULL WORKSPACE MODAL ── */}
+      {isExpanded && (
+        <div className="ai-workspace-modal" onClick={() => setIsExpanded(false)}>
+          <div className="ai-workspace-card" onClick={(e) => e.stopPropagation()}>
+            <header className="ai-workspace-header">
+              <div className="ai-workspace-header__left">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-muted)' }}>
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                </svg>
+                <h2 className="ai-workspace-title">AI Study Assistant Workspace</h2>
+                {uploadedDoc && <span className="ai-workspace-docname">{uploadedDoc.filename}</span>}
+              </div>
+              <div className="ai-workspace-header__right" style={{ display: 'flex', alignItems: 'center' }}>
+                {uploadedDoc && (
+                  <button className="btn btn-secondary" style={{ width: 'auto', padding: '5px 12px', marginRight: '16px', fontSize: '11px' }} onClick={resetDocument}>
+                    Replace Document
+                  </button>
+                )}
+                <button className="ai-workspace-close" onClick={() => setIsExpanded(false)}>×</button>
+              </div>
+            </header>
+            <div className="ai-workspace-body">
+              {!uploadedDoc ? (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', background: 'var(--bg-dark)' }}>
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '48px',
+                    borderRadius: 'var(--radius-lg)',
+                    border: '1px dashed var(--border)',
+                    backgroundColor: 'var(--bg-surface)',
+                    maxWidth: '480px',
+                    width: '100%',
+                    textAlign: 'center',
+                    boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+                  }}>
+                    <svg className="ai-sidebar-upload__icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    <h3 style={{ fontSize: '16px', fontWeight: '600', color: '#FFF', marginBottom: '8px' }}>Start your learning session</h3>
+                    <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '24px', lineHeight: 1.5 }}>
+                      Upload your study document to automatically generate summarized notes, Q&A chat assistants, interactive flashcards, or revision quizzes.
+                    </p>
+                    <button 
+                      className="btn btn-primary"
+                      onClick={() => fileInputRef.current?.click()}
+                      style={{ padding: '10px 24px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                      disabled={uploading}
+                    >
+                      {uploading ? (
+                        <>
+                          <svg className="ai-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                          </svg>
+                          Uploading document...
+                        </>
+                      ) : (
+                        'Select PDF, TXT or DOCX'
+                      )}
+                    </button>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '16px' }}>
+                      Supported formats: .pdf, .txt, .docx
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="ai-workspace-split">
+                  {/* Left Column: Navigation Tabs */}
+                  <div className="ai-workspace-tabs">
+                    <button 
+                      className={`ai-workspace-tab-btn ${activeTab === 'summary' ? 'ai-workspace-tab-btn--active' : ''}`}
+                      onClick={() => selectTab('summary')}
+                    >
+                      Document Summary
+                    </button>
+                    <button 
+                      className={`ai-workspace-tab-btn ${activeTab === 'chat' ? 'ai-workspace-tab-btn--active' : ''}`}
+                      onClick={() => selectTab('chat')}
+                    >
+                      Chat Q&A
+                    </button>
+                    <button 
+                      className={`ai-workspace-tab-btn ${activeTab === 'flashcards' ? 'ai-workspace-tab-btn--active' : ''}`}
+                      onClick={() => selectTab('flashcards')}
+                    >
+                      Interactive Flashcards
+                    </button>
+                    <button 
+                      className={`ai-workspace-tab-btn ${activeTab === 'mcq' ? 'ai-workspace-tab-btn--active' : ''}`}
+                      onClick={() => selectTab('mcq')}
+                    >
+                      Revision MCQs Quiz
+                    </button>
+                  </div>
+                  
+                  {/* Right Column: Content */}
+                  <div className="ai-workspace-content">
+                    {activeTab === 'summary' && (
+                      <div className="ai-workspace-summary" style={{ overflowY: 'auto', paddingRight: '10px' }}>
+                        {loadingSummary ? (
+                          <div className="ai-workspace-loading" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                            <svg className="ai-spinner" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginBottom: '12px', color: 'var(--text-muted)' }}>
+                              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                            </svg>
+                            <span>Analyzing document & creating notes...</span>
+                          </div>
+                        ) : summaryData ? (
+                          <div>
+                            <div className="ai-summary-card" style={{ padding: '24px', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
+                              <h4 className="ai-summary-card__title" style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '12px' }}>Executive Summary</h4>
+                              <p className="ai-summary-card__text" style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>{summaryData.executive_summary}</p>
+                            </div>
+                            
+                            <h4 className="ai-summary-card__title" style={{ marginTop: '28px', fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Key Concepts</h4>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px', marginBottom: '24px', marginTop: '12px' }}>
+                              {summaryData.key_concepts?.map((c, i) => (
+                                <div key={i} className="ai-concept-card" style={{ padding: '18px', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
+                                  <h5 className="ai-concept-card__name" style={{ fontSize: '13.5px', marginBottom: '6px', color: '#FFF', fontWeight: '600' }}>{c.concept}</h5>
+                                  <p className="ai-concept-card__desc" style={{ fontSize: '12px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>{c.description}</p>
+                                </div>
+                              ))}
+                            </div>
+ 
+                            <h4 className="ai-summary-card__title" style={{ marginTop: '28px', fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Key Takeaways</h4>
+                            <ul className="ai-points-list" style={{ marginTop: '12px', color: 'var(--text-secondary)', paddingLeft: '20px' }}>
+                              {summaryData.key_points?.map((p, i) => (
+                                <li key={i} style={{ fontSize: '13.5px', marginBottom: '8px', lineHeight: 1.5 }}>{p}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={() => fetchSummary()}>
+                              Generate Summary
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    
+                    {activeTab === 'chat' && (
+                      <div className="ai-workspace-chat" style={{ height: '100%', justifyContent: 'space-between' }}>
+                        <div className="ai-chat-messages" style={{ flex: 1, overflowY: 'auto', paddingRight: '10px', marginBottom: '16px' }}>
+                          {chatMessages.map(msg => (
+                            <div key={msg.id} className={`ai-message ai-message--${msg.sender}`} style={{ maxWidth: '80%' }}>
+                              <div className="ai-message__avatar">
+                                {msg.sender === 'ai' ? 'AI' : (profile?.username?.[0]?.toUpperCase() || 'U')}
+                              </div>
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div className="ai-message__bubble">
+                                  {msg.content}
+                                </div>
+                                <span className="ai-message__time">{msg.time}</span>
+                              </div>
+                            </div>
+                          ))}
+                          {sendingChat && (
+                            <div className="ai-message ai-message--ai" style={{ maxWidth: '80%' }}>
+                              <div className="ai-message__avatar">AI</div>
+                              <div className="ai-typing-indicator">
+                                <span className="ai-typing-dot"></span>
+                                <span className="ai-typing-dot"></span>
+                                <span className="ai-typing-dot"></span>
+                              </div>
+                            </div>
+                          )}
+                          <div ref={chatEndRef} />
+                        </div>
+                        
+                        <form className="ai-chat-compose" onSubmit={handleSendChat}>
+                          <input 
+                            type="text" 
+                            className="ai-chat-input"
+                            style={{ padding: '12px 16px', fontSize: '13.5px' }}
+                            placeholder="Ask anything about the document..."
+                            value={chatInput}
+                            onChange={e => setChatInput(e.target.value)}
+                            disabled={sendingChat}
+                          />
+                          <button type="submit" className="ai-chat-submit" style={{ height: '42px', padding: '0 24px' }} disabled={!chatInput.trim() || sendingChat}>
+                            Send
+                          </button>
+                        </form>
+                      </div>
+                    )}
+                    
+                    {activeTab === 'flashcards' && (
+                      <div className="ai-workspace-flashcards" style={{ justifyContent: 'center', height: '100%' }}>
+                        {loadingFlashcards ? (
+                          <div className="ai-workspace-loading" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                            <svg className="ai-spinner" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginBottom: '12px', color: 'var(--text-muted)' }}>
+                              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                            </svg>
+                            <span>Generating interactive study cards...</span>
+                          </div>
+                        ) : flashcards.length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                            <div className="ai-flashcard-container" style={{ height: '320px', width: '540px' }}>
+                              <div 
+                                className={`ai-flashcard ${flashcardFlipped ? 'ai-flashcard--flipped' : ''}`}
+                                onClick={() => setFlashcardFlipped(!flashcardFlipped)}
+                              >
+                                <div className="ai-flashcard__side ai-flashcard__front" style={{ padding: '36px' }}>
+                                  <span className="ai-flashcard__label">Question</span>
+                                  <p className="ai-flashcard__content" style={{ fontSize: '18px' }}>{flashcards[currentFlashcardIndex].question}</p>
+                                  <span className="ai-flashcard__label" style={{ marginTop: 'auto', marginBottom: 0, opacity: 0.5 }}>Click to reveal answer</span>
+                                </div>
+                                <div className="ai-flashcard__side ai-flashcard__back" style={{ padding: '36px' }}>
+                                  <span className="ai-flashcard__label">Answer</span>
+                                  <p className="ai-flashcard__content" style={{ fontSize: '16px' }}>{flashcards[currentFlashcardIndex].answer}</p>
+                                  <span className="ai-flashcard__label" style={{ marginTop: 'auto', marginBottom: 0, opacity: 0.5 }}>Click to flip back</span>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div className="ai-flashcard-controls" style={{ marginTop: '24px' }}>
+                              <button 
+                                className="btn btn-secondary" 
+                                style={{ width: 'auto', padding: '8px 20px', fontSize: '13px' }}
+                                disabled={currentFlashcardIndex === 0}
+                                onClick={() => {
+                                  setCurrentFlashcardIndex(prev => prev - 1);
+                                  setFlashcardFlipped(false);
+                                }}
+                              >
+                                Previous
+                              </button>
+                              <span style={{ fontSize: '14px', color: 'var(--text-muted)', minWidth: '70px', textAlign: 'center' }}>
+                                {currentFlashcardIndex + 1} of {flashcards.length}
+                              </span>
+                              <button 
+                                className="btn btn-secondary" 
+                                style={{ width: 'auto', padding: '8px 20px', fontSize: '13px' }}
+                                disabled={currentFlashcardIndex === flashcards.length - 1}
+                                onClick={() => {
+                                  setCurrentFlashcardIndex(prev => prev + 1);
+                                  setFlashcardFlipped(false);
+                                }}
+                              >
+                                Next
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={fetchFlashcards}>
+                              Generate Flashcards
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    
+                    {activeTab === 'mcq' && (
+                      <div className="ai-workspace-mcqs" style={{ overflowY: 'auto', height: '100%', paddingRight: '12px' }}>
+                        {loadingMcqs ? (
+                          <div className="ai-workspace-loading" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                            <svg className="ai-spinner" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginBottom: '12px', color: 'var(--text-muted)' }}>
+                              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                            </svg>
+                            <span>Generating mock quiz questions...</span>
+                          </div>
+                        ) : mcqs.length > 0 ? (
+                          <div>
+                            {/* Quiz Progress Indicator */}
+                            <div className="ai-workspace-mcq-progress">
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px', fontWeight: '500' }}>
+                                <span>Quiz Progress</span>
+                                <span style={{ color: 'var(--text-muted)' }}>
+                                  {Object.keys(mcqChecked).length} of {mcqs.length} answered
+                                </span>
+                              </div>
+                              <div className="ai-workspace-mcq-progress__bar-bg">
+                                <div 
+                                  className="ai-workspace-mcq-progress__bar-fill" 
+                                  style={{ width: `${(Object.keys(mcqChecked).length / mcqs.length) * 100}%` }}
+                                />
+                              </div>
+                            </div>
+
+                            {mcqs.map((q, qIdx) => {
+                              const isChecked = mcqChecked[qIdx];
+                              const selectedOptIdx = mcqAnswers[qIdx];
+                              const correctOptIdx = q.options.indexOf(q.correct_answer);
+
+                              return (
+                                <div key={qIdx} className="ai-workspace-mcq-item-card">
+                                  <h4 className="ai-workspace-mcq-question">Q{qIdx + 1}. {q.question}</h4>
+                                  
+                                  <div className="ai-workspace-mcq-options">
+                                    {q.options.map((opt, oIdx) => {
+                                      let optClass = 'ai-workspace-mcq-option-btn';
+                                      if (selectedOptIdx === oIdx) optClass += ' ai-workspace-mcq-option-btn--selected';
+                                      if (isChecked) {
+                                        optClass += ' ai-workspace-mcq-option-btn--disabled';
+                                        if (oIdx === correctOptIdx) optClass += ' ai-workspace-mcq-option-btn--correct';
+                                        else if (selectedOptIdx === oIdx) optClass += ' ai-workspace-mcq-option-btn--incorrect';
+                                      }
+
+                                      return (
+                                        <button 
+                                          key={oIdx} 
+                                          className={optClass}
+                                          disabled={isChecked}
+                                          onClick={() => handleSelectMcqOption(qIdx, oIdx)}
+                                        >
+                                          {opt}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+
+                                  {!isChecked ? (
+                                    <button 
+                                      className="btn btn-secondary" 
+                                      style={{ width: 'auto', padding: '6px 16px', fontSize: '12px' }}
+                                      disabled={selectedOptIdx === undefined}
+                                      onClick={() => handleCheckMcq(qIdx)}
+                                    >
+                                      Submit Answer
+                                    </button>
+                                  ) : (
+                                    <div style={{ fontSize: '13px', marginTop: '10px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      {selectedOptIdx === correctOptIdx 
+                                        ? <span style={{ color: '#4ade80' }}>✓ Correct! Well done.</span> 
+                                        : <span style={{ color: '#f87171' }}>✗ Incorrect. Correct answer: {q.correct_answer}</span>}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={fetchMcqs}>
+                              Generate MCQ Quiz
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </aside>
