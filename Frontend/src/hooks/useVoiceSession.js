@@ -12,11 +12,20 @@ export function useVoiceSession(userId) {
   const [error, setError] = useState('');
   const [micConnected, setMicConnected] = useState(false);
   const [callStatus, setCallStatus] = useState('');
+  const [connectionStatuses, setConnectionStatuses] = useState({});
+  const [turnWarning, setTurnWarning] = useState('');
 
   const localStreamRef = useRef(null);
   const peerConnectionsRef = useRef({});
   const participantsRef = useRef([]);
   const pendingCandidatesRef = useRef({});
+  const reconnectTimeoutsRef = useRef({});
+  const reconnectingRef = useRef({});
+  const lastAbsentRef = useRef({}); // Tracks when a user first went missing: { userId: timestamp }
+  const explicitlyLeftRef = useRef(new Set()); // Track users who explicitly left (via DELETE event)
+  const iceServersRef = useRef([
+    { urls: 'stun:stun.l.google.com:19302' }
+  ]);
 
   useEffect(() => {
     participantsRef.current = participants;
@@ -104,6 +113,15 @@ export function useVoiceSession(userId) {
     // Clear any pending ICE candidates for this user
     delete pendingCandidatesRef.current[otherUserId];
 
+    // Clear any reconnect timeout for this user
+    if (reconnectTimeoutsRef.current[otherUserId]) {
+      clearTimeout(reconnectTimeoutsRef.current[otherUserId]);
+      delete reconnectTimeoutsRef.current[otherUserId];
+    }
+    delete reconnectingRef.current[otherUserId];
+    delete lastAbsentRef.current[otherUserId];
+    explicitlyLeftRef.current.delete(otherUserId);
+
     const audioEl = document.getElementById(`remote-audio-${otherUserId}`);
     if (audioEl) {
       try {
@@ -111,14 +129,33 @@ export function useVoiceSession(userId) {
         audioEl.remove();
       } catch (e) {}
     }
+    setConnectionStatuses((prev) => {
+      const next = { ...prev };
+      delete next[otherUserId];
+      return next;
+    });
     updateCallStatus();
   }, [updateCallStatus]);
 
-  const cleanupAllCalls = useCallback(() => {
-    console.log('[WebRTC] Cleaning up all active peer connections');
+  const cleanupAllCalls = useCallback((reason) => {
+    if (!reason) {
+      console.log('[WebRTC] cleanupAllCalls called without reason, ignoring');
+      return;
+    }
+    console.log(`[WebRTC] Cleaning up all active peer connections. Reason: ${reason}`);
+    // Clear all reconnect timeouts first
+    Object.keys(reconnectTimeoutsRef.current).forEach((uid) => {
+      clearTimeout(reconnectTimeoutsRef.current[uid]);
+    });
+    reconnectTimeoutsRef.current = {};
+    reconnectingRef.current = {};
+    lastAbsentRef.current = {};
+    explicitlyLeftRef.current.clear();
+
     Object.keys(peerConnectionsRef.current).forEach((otherUserId) => {
       cleanupPeerConnection(otherUserId);
     });
+    setConnectionStatuses({});
     setCallStatus('');
   }, [cleanupPeerConnection]);
 
@@ -148,22 +185,20 @@ export function useVoiceSession(userId) {
       cleanupPeerConnection(otherUserId);
     }
 
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        ...(import.meta.env.VITE_TURN_URL
-          ? [{
-              urls: import.meta.env.VITE_TURN_URL,
-              username: import.meta.env.VITE_TURN_USERNAME,
-              credential: import.meta.env.VITE_TURN_CREDENTIAL,
-            }]
-          : [])
-      ]
-    });
+    const hasTurn = iceServersRef.current.some(srv => srv.urls && (srv.urls.includes('turn:') || srv.urls.includes('turns:')));
+    console.log(`[WebRTC] RTCPeerConnection is using ${hasTurn ? 'Metered TURN' : 'STUN-only'} configuration.`);
+    const rtcConfig = {
+      iceServers: iceServersRef.current,
+      iceCandidatePoolSize: 10,
+    };
+    const pc = new RTCPeerConnection(rtcConfig);
 
     peerConnectionsRef.current[otherUserId] = pc;
+
+    setConnectionStatuses((prev) => ({
+      ...prev,
+      [otherUserId]: 'connecting',
+    }));
 
     if (localStreamRef.current) {
       console.log(`[WebRTC] Adding local audio tracks to peer connection for ${otherUserId}`);
@@ -182,53 +217,60 @@ export function useVoiceSession(userId) {
     };
 
     pc.onconnectionstatechange = () => {
-      console.log(`[WebRTC] Connection state for user ${otherUserId}: ${pc.connectionState}`);
+      const connState = pc.connectionState;
+      console.log(`[WebRTC] Connection state for user ${otherUserId}: ${connState}`);
+
+      setConnectionStatuses((prev) => {
+        let status = 'disconnected';
+        if (connState === 'connected') status = 'connected';
+        else if (connState === 'connecting') status = 'connecting';
+        else if (connState === 'disconnected') status = 'disconnected';
+        else if (connState === 'failed') status = 'disconnected';
+        
+        if (reconnectTimeoutsRef.current[otherUserId] && status === 'disconnected') {
+          status = 'reconnecting';
+        }
+        return { ...prev, [otherUserId]: status };
+      });
+
+      if (connState === 'failed') {
+        console.log(`[WebRTC] failed detected, waiting 15s for user ${otherUserId}`);
+        triggerReconnect(otherUserId);
+      } else if (connState === 'connected' || connState === 'completed') {
+        if (reconnectTimeoutsRef.current[otherUserId]) {
+          console.log(`[WebRTC] failure recovered, cancelling reconnect for user ${otherUserId}`);
+          clearTimeout(reconnectTimeoutsRef.current[otherUserId]);
+          delete reconnectTimeoutsRef.current[otherUserId];
+        }
+      }
+    };
+
+    pc.onsignalingstatechange = () => {
+      console.log(`[WebRTC] Signaling state for user ${otherUserId}: ${pc.signalingState}`);
     };
 
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
       console.log(`[WebRTC] ICE connection state for user ${otherUserId}: ${state}`);
-      
-      if (state === 'connected') {
-        pc.getStats().then((stats) => {
-          let activeCandidatePair = null;
-          stats.forEach((report) => {
-            if (report.type === 'candidate-pair' && (report.selected || report.nominated)) {
-              activeCandidatePair = report;
-            }
-          });
 
-          if (activeCandidatePair) {
-            const localCandidate = stats.get(activeCandidatePair.localCandidateId);
-            const remoteCandidate = stats.get(activeCandidatePair.remoteCandidateId);
-            console.log(`[WebRTC] Selected ICE Candidate Pair for user ${otherUserId}:`, {
-              local: localCandidate ? {
-                candidateType: localCandidate.candidateType,
-                protocol: localCandidate.protocol,
-                ip: localCandidate.ip || localCandidate.address,
-                port: localCandidate.port,
-              } : 'unknown',
-              remote: remoteCandidate ? {
-                candidateType: remoteCandidate.candidateType,
-                protocol: remoteCandidate.protocol,
-                ip: remoteCandidate.ip || remoteCandidate.address,
-                port: remoteCandidate.port,
-              } : 'unknown',
-            });
-          }
-        }).catch((err) => {
-          console.error('[WebRTC] Error getting stats for selected candidate:', err);
-        });
+      if (state === 'connected' || state === 'completed') {
+        if (reconnectTimeoutsRef.current[otherUserId]) {
+          console.log(`[WebRTC] failure recovered, cancelling reconnect for user ${otherUserId}`);
+          clearTimeout(reconnectTimeoutsRef.current[otherUserId]);
+          delete reconnectTimeoutsRef.current[otherUserId];
+        }
+        delete reconnectingRef.current[otherUserId];
+      } else if (state === 'disconnected') {
+        console.log(`[WebRTC] disconnected ignored, waiting for browser recovery for user ${otherUserId}`);
+      } else if (state === 'failed') {
+        console.log(`[WebRTC] ICE failed for user ${otherUserId}, ignoring and waiting for connectionState to transition`);
       }
 
-      if (state === 'failed' || state === 'disconnected') {
-        console.log(`[WebRTC] Peer disconnected: ${otherUserId} (state: ${state})`);
-      }
       updateCallStatus();
     };
 
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Remote track received from user ${otherUserId}`);
+      console.log(`[WebRTC] Remote track received from user ${otherUserId}, kind: ${event.track.kind}, readyState: ${event.track.readyState}`);
       const remoteStream = event.streams[0];
 
       let audioEl = document.getElementById(`remote-audio-${otherUserId}`);
@@ -243,22 +285,115 @@ export function useVoiceSession(userId) {
       updateCallStatus();
     };
 
-    // Flush any ICE candidates that arrived before this connection was created
-    const queued = pendingCandidatesRef.current[otherUserId];
-    if (queued && queued.length > 0) {
-      console.log(`[WebRTC] Flushing ${queued.length} queued ICE candidates for user ${otherUserId}`);
-      queued.forEach(async (candidateData) => {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidateData));
-        } catch (err) {
-          console.error(`[WebRTC] Error adding queued ICE candidate for ${otherUserId}:`, err);
-        }
-      });
-      delete pendingCandidatesRef.current[otherUserId];
+    return pc;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendSignal, cleanupPeerConnection, updateCallStatus]);
+
+  // ---------- reconnect helper ----------
+  const reconnectPeer = useCallback(async (otherUserId) => {
+    // Prevent duplicate reconnect attempts
+    if (reconnectingRef.current[otherUserId]) {
+      console.log(`[WebRTC] Reconnect already in progress for ${otherUserId}, skipping`);
+      return;
+    }
+    reconnectingRef.current[otherUserId] = true;
+
+    // Clear any pending reconnect timeout
+    if (reconnectTimeoutsRef.current[otherUserId]) {
+      clearTimeout(reconnectTimeoutsRef.current[otherUserId]);
+      delete reconnectTimeoutsRef.current[otherUserId];
     }
 
-    return pc;
-  }, [sendSignal, cleanupPeerConnection, updateCallStatus]);
+    console.log(`[WebRTC] Reconnecting peer connection for user ${otherUserId}`);
+    cleanupPeerConnection(otherUserId);
+
+    setConnectionStatuses((prev) => ({
+      ...prev,
+      [otherUserId]: 'connecting',
+    }));
+
+    // Only the initiator (smaller userId) re-creates and sends a new offer.
+    // The other side will receive the offer via signaling and respond.
+    const currentUserId = currentUserIdRef.current;
+    if (currentUserId && currentUserId < otherUserId) {
+      console.log(`[WebRTC] Re-creating connection and sending new offer to ${otherUserId}`);
+      const pc = createPeerConnection(otherUserId);
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await sendSignal(otherUserId, 'offer', offer);
+      } catch (err) {
+        console.error(`[WebRTC] Error creating/sending reconnect offer to ${otherUserId}:`, err);
+      }
+    } else {
+      console.log(`[WebRTC] Waiting for reconnect offer from ${otherUserId} (they are initiator)`);
+    }
+
+    // Allow future reconnects after a cooldown
+    setTimeout(() => {
+      delete reconnectingRef.current[otherUserId];
+    }, 3000);
+  }, [cleanupPeerConnection, createPeerConnection, sendSignal]);
+
+  const triggerReconnect = useCallback((otherUserId) => {
+    // 1. Only reconnect if the peer is still present in voice_participants
+    const isPresent = participantsRef.current.some((p) => p.user_id === otherUserId);
+    if (!isPresent) {
+      console.log(`[WebRTC] Peer ${otherUserId} is no longer in channel, skipping reconnect`);
+      return;
+    }
+
+    // 2. Do not create multiple reconnect timers for same user
+    if (reconnectTimeoutsRef.current[otherUserId]) {
+      console.log(`[WebRTC] Reconnect timer already exists for ${otherUserId}, skipping`);
+      return;
+    }
+
+    setConnectionStatuses((prev) => ({
+      ...prev,
+      [otherUserId]: 'reconnecting',
+    }));
+
+    console.log(`[WebRTC] Scheduling reconnect for ${otherUserId} in 15 seconds`);
+    reconnectTimeoutsRef.current[otherUserId] = setTimeout(async () => {
+      delete reconnectTimeoutsRef.current[otherUserId];
+
+      const stillPresent = participantsRef.current.some((p) => p.user_id === otherUserId);
+      if (!stillPresent) {
+        console.log(`[WebRTC] Peer ${otherUserId} left during reconnect delay, aborting reconnect`);
+        setConnectionStatuses((prev) => {
+          const next = { ...prev };
+          delete next[otherUserId];
+          return next;
+        });
+        return;
+      }
+
+      const pc = peerConnectionsRef.current[otherUserId];
+      if (pc && pc.connectionState === 'failed') {
+        console.log(`[WebRTC] reconnecting after 15s confirmed failure for user ${otherUserId}`);
+        await reconnectPeer(otherUserId);
+      } else {
+        console.log(`[WebRTC] Peer connection for ${otherUserId} is no longer in failed state, cancelling reconnect execution`);
+      }
+    }, 15000);
+  }, [reconnectPeer]);
+
+  const flushPendingIceCandidates = useCallback(async (pc, otherUserId) => {
+    const queued = pendingCandidatesRef.current[otherUserId];
+    if (queued && queued.length > 0) {
+      console.log(`[WebRTC] Processing buffered ICE candidates (${queued.length}) for user ${otherUserId}`);
+      for (const candidateData of queued) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+          console.log(`[WebRTC] Added buffered ICE candidate for user ${otherUserId}`);
+        } catch (err) {
+          console.error(`[WebRTC] Error adding buffered ICE candidate for ${otherUserId}:`, err);
+        }
+      }
+      delete pendingCandidatesRef.current[otherUserId];
+    }
+  }, []);
 
   const handleOffer = useCallback(async (senderId, offerSdp) => {
     console.log(`[WebRTC] Receiving offer from user: ${senderId}`);
@@ -269,6 +404,7 @@ export function useVoiceSession(userId) {
 
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
+      await flushPendingIceCandidates(pc, senderId);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       console.log(`[WebRTC] Sending answer to user: ${senderId}`);
@@ -276,7 +412,7 @@ export function useVoiceSession(userId) {
     } catch (err) {
       console.error(`[WebRTC] Error handling offer from user ${senderId}:`, err);
     }
-  }, [createPeerConnection, sendSignal]);
+  }, [createPeerConnection, sendSignal, flushPendingIceCandidates]);
 
   const handleAnswer = useCallback(async (senderId, answerSdp) => {
     console.log(`[WebRTC] Receiving answer from user: ${senderId}`);
@@ -284,27 +420,29 @@ export function useVoiceSession(userId) {
     if (pc) {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(answerSdp));
+        await flushPendingIceCandidates(pc, senderId);
       } catch (err) {
         console.error(`[WebRTC] Error setting remote answer for user ${senderId}:`, err);
       }
     } else {
       console.warn(`[WebRTC] RTCPeerConnection not found when handling answer from user: ${senderId}`);
     }
-  }, []);
+  }, [flushPendingIceCandidates]);
 
   const handleIceCandidate = useCallback(async (senderId, candidateData) => {
-    console.log(`[WebRTC] Adding ICE candidate from user: ${senderId}`);
     const pc = peerConnectionsRef.current[senderId];
-    if (pc) {
+    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+      // Remote description is set — safe to add the candidate immediately
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+        console.log(`[WebRTC] Added ICE candidate from user ${senderId}`);
       } catch (err) {
         console.error(`[WebRTC] Error adding ICE candidate for user ${senderId}:`, err);
       }
     } else {
-      // Queue the candidate — the peer connection may not exist yet
-      // (common in mesh with 3+ users when signals arrive out of order)
-      console.log(`[WebRTC] Queuing ICE candidate for user ${senderId} (no peer connection yet)`);
+      // Buffer the candidate — either the peer connection doesn't exist yet,
+      // or setRemoteDescription() hasn't completed
+      console.log(`[WebRTC] Buffering ICE candidate from user ${senderId}`);
       if (!pendingCandidatesRef.current[senderId]) {
         pendingCandidatesRef.current[senderId] = [];
       }
@@ -325,12 +463,11 @@ export function useVoiceSession(userId) {
     }
   }, [handleOffer, handleAnswer, handleIceCandidate]);
 
-  // ---------- fetch participants ----------
   const fetchParticipants = useCallback(async () => {
     if (!joinedChannelId) return;
 
-    // Delete stale rows older than 20 seconds when loading participants.
-    const staleTime = new Date(Date.now() - 20000).toISOString();
+    // Delete stale rows older than 60 seconds when loading participants.
+    const staleTime = new Date(Date.now() - 60000).toISOString();
     supabase
       .from('voice_participants')
       .delete()
@@ -361,15 +498,32 @@ export function useVoiceSession(userId) {
     if (fetchErr) {
       console.error('Failed to fetch voice participants:', fetchErr);
     } else {
-      const cutoff = Date.now() - 15000;
+      const cutoff = Date.now() - 45000;
+      const rawCount = data ? data.length : 0;
+      
       const activeParticipants = (data || []).filter((p) => {
+        // 1. Current user is never filtered out
+        if (p.user_id === userId) return true;
+
+        // 2. Check last_seen with safe threshold (tolerating future clock drift)
         if (!p.last_seen) return true;
-        return new Date(p.last_seen).getTime() > cutoff;
+        const lastSeenTime = new Date(p.last_seen).getTime();
+        if (lastSeenTime > Date.now()) return true;
+        return Date.now() - lastSeenTime < 45000;
       });
+
+      console.log(`[VoiceSync] Participants fetched:`, {
+        activeVoiceChannelId: joinedChannelId,
+        currentUserId: userId,
+        rawParticipantCount: rawCount,
+        filteredParticipantCount: activeParticipants.length,
+        participantUserIds: activeParticipants.map(p => p.user_id)
+      });
+
       setParticipants(activeParticipants);
     }
     setLoading(false);
-  }, [joinedChannelId]);
+  }, [joinedChannelId, userId]);
 
   // ---------- join voice ----------
   const handleJoin = async (channelId, channelName, serverId) => {
@@ -379,6 +533,25 @@ export function useVoiceSession(userId) {
 
     try {
       await initLocalAudio(false);
+
+      // Fetch TURN credentials from FastAPI backend
+      try {
+        console.log('[WebRTC] Fetching TURN credentials from backend...');
+        const response = await fetch('http://127.0.0.1:8000/api/turn-credentials');
+        if (!response.ok) {
+          throw new Error(`Failed to fetch TURN credentials: ${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        console.log('[WebRTC] TURN credentials fetched successfully:', data);
+        iceServersRef.current = data;
+        setTurnWarning('');
+      } catch (err) {
+        console.error('[WebRTC] Error fetching TURN credentials from backend (falling back to STUN-only):', err);
+        iceServersRef.current = [
+          { urls: 'stun:stun.l.google.com:19302' }
+        ];
+        setTurnWarning('TURN unavailable, voice may be unstable');
+      }
 
       const { error: leaveErr } = await supabase
         .from('voice_participants')
@@ -421,7 +594,7 @@ export function useVoiceSession(userId) {
     setError('');
 
     cleanupLocalAudio();
-    cleanupAllCalls();
+    cleanupAllCalls('manual-disconnect');
 
     setParticipants([]);
     const leavingChannelId = joinedChannelId;
@@ -461,14 +634,18 @@ export function useVoiceSession(userId) {
   };
 
   // ---------- clean up voice session on unmount or unload ----------
-  const cleanupVoiceSession = useCallback(() => {
-    if (!isJoinedRef.current || !currentChannelIdRef.current || !currentUserIdRef.current) return;
+  const cleanupVoiceSession = useCallback((reason) => {
+    if (!reason) {
+      console.log('[VoicePanel] cleanupVoiceSession called without reason, ignoring');
+      return;
+    }
+    if (!currentChannelIdRef.current || !currentUserIdRef.current) return;
 
     isJoinedRef.current = false;
-    console.log('[VoicePanel] Cleaning up voice session');
+    console.log(`[VoicePanel] Cleaning up voice session. Reason: ${reason}`);
 
     cleanupLocalAudio();
-    cleanupAllCalls();
+    cleanupAllCalls('voice-session-ended');
 
     supabase
       .from('voice_participants')
@@ -482,9 +659,9 @@ export function useVoiceSession(userId) {
       });
   }, [cleanupLocalAudio, cleanupAllCalls]);
 
-  // React to changes in isJoined and isMuted to manage mic state and track activation
+  // React to changes in joinedChannelId and isMuted to manage mic state and track activation
   useEffect(() => {
-    if (isJoined) {
+    if (joinedChannelId) {
       if (!localStreamRef.current) {
         initLocalAudio(isMuted).catch((err) => {
           console.error('Auto-initialization of local audio failed:', err);
@@ -497,19 +674,19 @@ export function useVoiceSession(userId) {
     } else {
       cleanupLocalAudio();
     }
-  }, [isJoined, isMuted, initLocalAudio, cleanupLocalAudio]);
+  }, [joinedChannelId, isMuted, initLocalAudio, cleanupLocalAudio]);
 
   // Clean up all local audio tracks, peer connections, and database row on component unmount or tab close
   useEffect(() => {
     const handleBeforeUnload = () => {
-      cleanupVoiceSession();
+      cleanupVoiceSession('tab-close');
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      cleanupVoiceSession();
+      cleanupVoiceSession('unmount');
     };
   }, [cleanupVoiceSession]);
 
@@ -529,7 +706,7 @@ export function useVoiceSession(userId) {
 
   // Heartbeat to update last_seen every 5 seconds when joined
   useEffect(() => {
-    if (!isJoined || !joinedChannelId || !userId) return;
+    if (!joinedChannelId || !userId) return;
 
     const interval = setInterval(async () => {
       const { error } = await supabase
@@ -544,11 +721,16 @@ export function useVoiceSession(userId) {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [isJoined, joinedChannelId, userId]);
+  }, [joinedChannelId, userId]);
+
+  const handleIncomingSignalRef = useRef(handleIncomingSignal);
+  useEffect(() => {
+    handleIncomingSignalRef.current = handleIncomingSignal;
+  }, [handleIncomingSignal]);
 
   // ---------- WebRTC signaling subscription ----------
   useEffect(() => {
-    if (!joinedChannelId || !isJoined || !userId) return;
+    if (!joinedChannelId || !userId) return;
 
     console.log(`[WebRTC] Subscribing to voice_signals for channel ${joinedChannelId}, receiver ${userId}`);
 
@@ -565,7 +747,7 @@ export function useVoiceSession(userId) {
         (payload) => {
           const signal = payload.new;
           if (signal.channel_id === joinedChannelId) {
-            handleIncomingSignal(signal);
+            handleIncomingSignalRef.current(signal);
           }
         }
       )
@@ -575,12 +757,12 @@ export function useVoiceSession(userId) {
       console.log(`[WebRTC] Unsubscribing from voice_signals for channel ${joinedChannelId}`);
       supabase.removeChannel(channel);
     };
-  }, [joinedChannelId, isJoined, userId, handleIncomingSignal]);
+  }, [joinedChannelId, userId]);
 
   // ---------- WebRTC Call initialization & tracking ----------
   useEffect(() => {
-    if (!isJoined || !micConnected) {
-      cleanupAllCalls();
+    if (!joinedChannelId || !micConnected) {
+      cleanupAllCalls('no-channel-or-mic-disconnected');
       return;
     }
 
@@ -591,15 +773,45 @@ export function useVoiceSession(userId) {
       for (const p of remoteParticipants) {
         const otherUserId = p.user_id;
 
-        // Skip if connection already exists and is not closed/failed
+        // Skip if connection already exists and is in a non-terminal state.
+        // 'disconnected' is handled by the reconnect timer inside oniceconnectionstatechange,
+        // so we do NOT tear it down here.
         const existingPc = peerConnectionsRef.current[otherUserId];
         if (existingPc) {
-          const state = existingPc.connectionState || existingPc.iceConnectionState;
-          if (state !== 'failed' && state !== 'closed') {
+          const connState = existingPc.connectionState;
+          const iceState = existingPc.iceConnectionState;
+
+          // If a reconnect timer is already scheduled for this user, let the timer handle it
+          if (reconnectTimeoutsRef.current[otherUserId]) {
+            console.log(`[WebRTC] failed peer detected but reconnect timer already scheduled for ${otherUserId} — skipping immediate recreate`);
             continue;
           }
-          // Connection is dead, clean up and re-establish
-          console.log(`[WebRTC] Existing connection to ${otherUserId} is ${state}, re-establishing`);
+
+          // If the peer is failed but reconnecting flag is set, let reconnectPeer handle it
+          if (reconnectingRef.current[otherUserId]) {
+            console.log(`[WebRTC] Peer ${otherUserId} is being reconnected — skipping immediate recreate`);
+            continue;
+          }
+
+          // 'disconnected' is NOT terminal — browser may recover on its own
+          if (connState === 'disconnected') {
+            continue;
+          }
+
+          // Only 'closed' is immediately terminal.
+          // 'failed' should be handled by the reconnect timer triggered from onconnectionstatechange.
+          if (connState === 'failed') {
+            console.log(`[WebRTC] Peer ${otherUserId} is failed with no reconnect timer — reconnect timer is responsible for cleanup, scheduling now`);
+            triggerReconnect(otherUserId);
+            continue;
+          }
+
+          if (connState !== 'closed') {
+            // Connection is alive or connecting — leave it alone
+            continue;
+          }
+
+          console.log(`[WebRTC] Existing connection to ${otherUserId} is closed (conn=${connState}, ice=${iceState}), re-establishing`);
           cleanupPeerConnection(otherUserId);
         }
 
@@ -623,13 +835,44 @@ export function useVoiceSession(userId) {
     startConnections();
 
     const currentParticipantIds = new Set(participants.map((p) => p.user_id));
+    const now = Date.now();
+
     Object.keys(peerConnectionsRef.current).forEach((otherUserId) => {
-      if (!currentParticipantIds.has(otherUserId)) {
-        console.log(`[WebRTC] User ${otherUserId} is no longer in the participant list. Closing connection.`);
+      // 1. Explicitly left via DELETE event
+      if (explicitlyLeftRef.current.has(otherUserId)) {
+        console.log(`[WebRTC] User ${otherUserId} explicitly left. Closing connection.`);
         cleanupPeerConnection(otherUserId);
+        return;
+      }
+
+      const participant = participants.find((p) => p.user_id === otherUserId);
+      if (!participant) {
+        // User is absent from the current participants list
+        if (!lastAbsentRef.current[otherUserId]) {
+          lastAbsentRef.current[otherUserId] = now;
+          console.log(`[WebRTC] User ${otherUserId} is missing from participant list, starting grace period.`);
+        } else {
+          const absentDuration = now - lastAbsentRef.current[otherUserId];
+          if (absentDuration > 10000) {
+            console.log(`[WebRTC] User ${otherUserId} absent for ${absentDuration}ms (>10s). Closing connection.`);
+            cleanupPeerConnection(otherUserId);
+          }
+        }
+      } else {
+        // User is present in the list - clear absent timer
+        delete lastAbsentRef.current[otherUserId];
+
+        // 2. Check if their last_seen is stale (> 20 seconds)
+        if (participant.last_seen) {
+          const lastSeenTime = new Date(participant.last_seen).getTime();
+          if (now - lastSeenTime > 20000) {
+            console.log(`[WebRTC] User ${otherUserId} is stale (last_seen > 20s ago). Closing connection.`);
+            cleanupPeerConnection(otherUserId);
+          }
+        }
       }
     });
-  }, [participants, isJoined, micConnected, userId, createPeerConnection, sendSignal, cleanupPeerConnection, cleanupAllCalls]);
+  }, [participants, joinedChannelId, micConnected, userId, createPeerConnection, sendSignal, cleanupPeerConnection, cleanupAllCalls]);
 
   // ---------- voice participants realtime subscription ----------
   useEffect(() => {
@@ -662,19 +905,17 @@ export function useVoiceSession(userId) {
             const deletedId = payload.old.id;
             const deletedParticipant = participantsRef.current.find(p => p.id === deletedId);
             
-            if (deletedParticipant && deletedParticipant.user_id !== userId) {
-              console.log('Voice participant left');
-              new Audio('/sounds/user-leave.mp3').play().catch(e => console.error('Audio play error:', e));
-            }
-
-            setParticipants((prev) => {
-              const exists = prev.some((p) => p.id === deletedId);
-              if (exists) {
-                return prev.filter((p) => p.id !== deletedId);
+            if (deletedParticipant) {
+              if (deletedParticipant.user_id !== userId) {
+                console.log('Voice participant left');
+                new Audio('/sounds/user-leave.mp3').play().catch(e => console.error('Audio play error:', e));
+                // Mark the user as explicitly left so we clean them up immediately in startConnections effect
+                explicitlyLeftRef.current.add(deletedParticipant.user_id);
               }
-              return prev;
-            });
-            fetchParticipants();
+
+              setParticipants((prev) => prev.filter((p) => p.id !== deletedId));
+              fetchParticipants();
+            }
           }
         }
       )
@@ -701,5 +942,7 @@ export function useVoiceSession(userId) {
     handleJoin,
     handleLeave,
     handleToggleMute,
+    connectionStatuses,
+    turnWarning,
   };
 }

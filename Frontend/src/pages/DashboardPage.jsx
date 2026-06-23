@@ -475,6 +475,8 @@ export default function DashboardPage() {
         serverInviteCode={activeServerInviteCode}
         members={members}
         membersLoading={membersLoading}
+        profile={profile}
+        userId={user?.id}
       />
     </div>
   );
