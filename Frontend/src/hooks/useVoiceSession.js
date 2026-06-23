@@ -17,6 +17,9 @@ export function useVoiceSession(userId) {
   const peerConnectionsRef = useRef({});
   const participantsRef = useRef([]);
   const pendingCandidatesRef = useRef({});
+  const iceServersRef = useRef([
+    { urls: 'stun:stun.l.google.com:19302' }
+  ]);
 
   useEffect(() => {
     participantsRef.current = participants;
@@ -148,20 +151,13 @@ export function useVoiceSession(userId) {
       cleanupPeerConnection(otherUserId);
     }
 
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        ...(import.meta.env.VITE_TURN_URL
-          ? [{
-              urls: import.meta.env.VITE_TURN_URL,
-              username: import.meta.env.VITE_TURN_USERNAME,
-              credential: import.meta.env.VITE_TURN_CREDENTIAL,
-            }]
-          : [])
-      ]
-    });
+    const rtcConfig = {
+      iceServers: iceServersRef.current,
+      iceCandidatePoolSize: 10,
+    };
+
+    console.log('[WebRTC] RTCPeerConnection config:', JSON.stringify(rtcConfig, null, 2));
+    const pc = new RTCPeerConnection(rtcConfig);
 
     peerConnectionsRef.current[otherUserId] = pc;
 
@@ -183,6 +179,10 @@ export function useVoiceSession(userId) {
 
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Connection state for user ${otherUserId}: ${pc.connectionState}`);
+    };
+
+    pc.onsignalingstatechange = () => {
+      console.log(`[WebRTC] Signaling state for user ${otherUserId}: ${pc.signalingState}`);
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -228,7 +228,7 @@ export function useVoiceSession(userId) {
     };
 
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Remote track received from user ${otherUserId}`);
+      console.log(`[WebRTC] Remote track received from user ${otherUserId}, kind: ${event.track.kind}, readyState: ${event.track.readyState}`);
       const remoteStream = event.streams[0];
 
       let audioEl = document.getElementById(`remote-audio-${otherUserId}`);
@@ -379,6 +379,23 @@ export function useVoiceSession(userId) {
 
     try {
       await initLocalAudio(false);
+
+      // Fetch TURN credentials from FastAPI backend
+      try {
+        console.log('[WebRTC] Fetching TURN credentials from backend...');
+        const response = await fetch('http://127.0.0.1:8000/api/turn-credentials');
+        if (!response.ok) {
+          throw new Error(`Failed to fetch TURN credentials: ${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        console.log('[WebRTC] TURN credentials fetched successfully:', data);
+        iceServersRef.current = data;
+      } catch (err) {
+        console.warn('[WebRTC] Failed to fetch TURN credentials, falling back to STUN-only:', err);
+        iceServersRef.current = [
+          { urls: 'stun:stun.l.google.com:19302' }
+        ];
+      }
 
       const { error: leaveErr } = await supabase
         .from('voice_participants')
