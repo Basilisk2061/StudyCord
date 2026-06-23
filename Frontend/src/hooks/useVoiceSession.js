@@ -19,6 +19,8 @@ export function useVoiceSession(userId) {
   const pendingCandidatesRef = useRef({});
   const reconnectTimeoutsRef = useRef({});
   const reconnectingRef = useRef({});
+  const lastAbsentRef = useRef({}); // Tracks when a user first went missing: { userId: timestamp }
+  const explicitlyLeftRef = useRef(new Set()); // Track users who explicitly left (via DELETE event)
   const iceServersRef = useRef([
     { urls: 'stun:stun.l.google.com:19302' }
   ]);
@@ -115,6 +117,8 @@ export function useVoiceSession(userId) {
       delete reconnectTimeoutsRef.current[otherUserId];
     }
     delete reconnectingRef.current[otherUserId];
+    delete lastAbsentRef.current[otherUserId];
+    explicitlyLeftRef.current.delete(otherUserId);
 
     const audioEl = document.getElementById(`remote-audio-${otherUserId}`);
     if (audioEl) {
@@ -134,6 +138,8 @@ export function useVoiceSession(userId) {
     });
     reconnectTimeoutsRef.current = {};
     reconnectingRef.current = {};
+    lastAbsentRef.current = {};
+    explicitlyLeftRef.current.clear();
 
     Object.keys(peerConnectionsRef.current).forEach((otherUserId) => {
       cleanupPeerConnection(otherUserId);
@@ -489,7 +495,7 @@ export function useVoiceSession(userId) {
         console.log('[WebRTC] TURN credentials fetched successfully:', data);
         iceServersRef.current = data;
       } catch (err) {
-        console.warn('[WebRTC] Failed to fetch TURN credentials, falling back to STUN-only:', err);
+        console.error('[WebRTC] Error fetching TURN credentials from backend (falling back to STUN-only):', err);
         iceServersRef.current = [
           { urls: 'stun:stun.l.google.com:19302' }
         ];
@@ -745,10 +751,41 @@ export function useVoiceSession(userId) {
     startConnections();
 
     const currentParticipantIds = new Set(participants.map((p) => p.user_id));
+    const now = Date.now();
+
     Object.keys(peerConnectionsRef.current).forEach((otherUserId) => {
-      if (!currentParticipantIds.has(otherUserId)) {
-        console.log(`[WebRTC] User ${otherUserId} is no longer in the participant list. Closing connection.`);
+      // 1. Explicitly left via DELETE event
+      if (explicitlyLeftRef.current.has(otherUserId)) {
+        console.log(`[WebRTC] User ${otherUserId} explicitly left. Closing connection.`);
         cleanupPeerConnection(otherUserId);
+        return;
+      }
+
+      const participant = participants.find((p) => p.user_id === otherUserId);
+      if (!participant) {
+        // User is absent from the current participants list
+        if (!lastAbsentRef.current[otherUserId]) {
+          lastAbsentRef.current[otherUserId] = now;
+          console.log(`[WebRTC] User ${otherUserId} is missing from participant list, starting grace period.`);
+        } else {
+          const absentDuration = now - lastAbsentRef.current[otherUserId];
+          if (absentDuration > 10000) {
+            console.log(`[WebRTC] User ${otherUserId} absent for ${absentDuration}ms (>10s). Closing connection.`);
+            cleanupPeerConnection(otherUserId);
+          }
+        }
+      } else {
+        // User is present in the list - clear absent timer
+        delete lastAbsentRef.current[otherUserId];
+
+        // 2. Check if their last_seen is stale (> 20 seconds)
+        if (participant.last_seen) {
+          const lastSeenTime = new Date(participant.last_seen).getTime();
+          if (now - lastSeenTime > 20000) {
+            console.log(`[WebRTC] User ${otherUserId} is stale (last_seen > 20s ago). Closing connection.`);
+            cleanupPeerConnection(otherUserId);
+          }
+        }
       }
     });
   }, [participants, isJoined, micConnected, userId, createPeerConnection, sendSignal, cleanupPeerConnection, cleanupAllCalls]);
@@ -787,6 +824,8 @@ export function useVoiceSession(userId) {
             if (deletedParticipant && deletedParticipant.user_id !== userId) {
               console.log('Voice participant left');
               new Audio('/sounds/user-leave.mp3').play().catch(e => console.error('Audio play error:', e));
+              // Mark the user as explicitly left so we clean them up immediately in startConnections effect
+              explicitlyLeftRef.current.add(deletedParticipant.user_id);
             }
 
             setParticipants((prev) => {
