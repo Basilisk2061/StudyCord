@@ -187,6 +187,10 @@ export function useVoiceSession(userId) {
 
     const hasTurn = iceServersRef.current.some(srv => srv.urls && (srv.urls.includes('turn:') || srv.urls.includes('turns:')));
     console.log(`[WebRTC] RTCPeerConnection is using ${hasTurn ? 'Metered TURN' : 'STUN-only'} configuration.`);
+    const rtcConfig = {
+      iceServers: iceServersRef.current,
+      iceCandidatePoolSize: 10,
+    };
     const pc = new RTCPeerConnection(rtcConfig);
 
     peerConnectionsRef.current[otherUserId] = pc;

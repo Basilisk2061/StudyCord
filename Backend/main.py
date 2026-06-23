@@ -87,6 +87,7 @@ async def get_turn_credentials():
         )
 
 if __name__ == "__main__":
+    # pyrefly: ignore [missing-import]
     import uvicorn
     # Read port from env if needed, default to 8000
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
