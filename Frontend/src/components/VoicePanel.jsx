@@ -29,6 +29,9 @@ export default function VoicePanel({
   const isMuted = voiceSession.isMuted;
   const joining = voiceSession.joining;
 
+  const activeParticipants = isJoinedHere ? (voiceSession.participants || []) : participants;
+  const activeLoading = isJoinedHere ? voiceSession.loading : loading;
+
   // ---------- fetch participants for this channel ----------
   const fetchParticipants = useCallback(async () => {
     if (!channelId) return;
@@ -175,7 +178,7 @@ export default function VoicePanel({
           <span className="voice-panel__server-name">{serverName}</span>
         </div>
         <span className="voice-panel__participant-count">
-          {participants.length} {participants.length === 1 ? 'user' : 'users'}
+          {activeParticipants.length} {activeParticipants.length === 1 ? 'user' : 'users'}
         </span>
       </div>
 
@@ -265,17 +268,17 @@ export default function VoicePanel({
       {/* Participants list */}
       <div className="voice-panel__participants">
         <div className="voice-panel__participants-header">
-          <span>IN VOICE — {participants.length}</span>
+          <span>IN VOICE — {activeParticipants.length}</span>
         </div>
 
-        {loading ? (
+        {activeLoading ? (
           <div className="voice-panel__loading">
             <svg className="spinner-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 12a9 9 0 1 1-6.219-8.56" />
             </svg>
             <span>Loading participants…</span>
           </div>
-        ) : participants.length === 0 ? (
+        ) : activeParticipants.length === 0 ? (
           <div className="voice-panel__empty">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.3 }}>
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
@@ -286,7 +289,7 @@ export default function VoicePanel({
           </div>
         ) : (
           <div className="voice-panel__list">
-            {participants.map((p) => {
+            {activeParticipants.map((p) => {
               const username = p.profiles?.username || 'Unknown';
               const avatarUrl = p.profiles?.avatar_url;
               const initial = username[0]?.toUpperCase() || '?';

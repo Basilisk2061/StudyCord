@@ -130,8 +130,12 @@ export function useVoiceSession(userId) {
     updateCallStatus();
   }, [updateCallStatus]);
 
-  const cleanupAllCalls = useCallback(() => {
-    console.log('[WebRTC] Cleaning up all active peer connections');
+  const cleanupAllCalls = useCallback((reason) => {
+    if (!reason) {
+      console.log('[WebRTC] cleanupAllCalls called without reason, ignoring');
+      return;
+    }
+    console.log(`[WebRTC] Cleaning up all active peer connections. Reason: ${reason}`);
     // Clear all reconnect timeouts first
     Object.keys(reconnectTimeoutsRef.current).forEach((uid) => {
       clearTimeout(reconnectTimeoutsRef.current[uid]);
@@ -433,8 +437,8 @@ export function useVoiceSession(userId) {
   const fetchParticipants = useCallback(async () => {
     if (!joinedChannelId) return;
 
-    // Delete stale rows older than 20 seconds when loading participants.
-    const staleTime = new Date(Date.now() - 20000).toISOString();
+    // Delete stale rows older than 40 seconds when loading participants.
+    const staleTime = new Date(Date.now() - 40000).toISOString();
     supabase
       .from('voice_participants')
       .delete()
@@ -465,7 +469,7 @@ export function useVoiceSession(userId) {
     if (fetchErr) {
       console.error('Failed to fetch voice participants:', fetchErr);
     } else {
-      const cutoff = Date.now() - 15000;
+      const cutoff = Date.now() - 30000;
       const activeParticipants = (data || []).filter((p) => {
         if (!p.last_seen) return true;
         return new Date(p.last_seen).getTime() > cutoff;
@@ -542,7 +546,7 @@ export function useVoiceSession(userId) {
     setError('');
 
     cleanupLocalAudio();
-    cleanupAllCalls();
+    cleanupAllCalls('manual-disconnect');
 
     setParticipants([]);
     const leavingChannelId = joinedChannelId;
@@ -582,14 +586,18 @@ export function useVoiceSession(userId) {
   };
 
   // ---------- clean up voice session on unmount or unload ----------
-  const cleanupVoiceSession = useCallback(() => {
-    if (!isJoinedRef.current || !currentChannelIdRef.current || !currentUserIdRef.current) return;
+  const cleanupVoiceSession = useCallback((reason) => {
+    if (!reason) {
+      console.log('[VoicePanel] cleanupVoiceSession called without reason, ignoring');
+      return;
+    }
+    if (!currentChannelIdRef.current || !currentUserIdRef.current) return;
 
     isJoinedRef.current = false;
-    console.log('[VoicePanel] Cleaning up voice session');
+    console.log(`[VoicePanel] Cleaning up voice session. Reason: ${reason}`);
 
     cleanupLocalAudio();
-    cleanupAllCalls();
+    cleanupAllCalls('voice-session-ended');
 
     supabase
       .from('voice_participants')
@@ -603,9 +611,9 @@ export function useVoiceSession(userId) {
       });
   }, [cleanupLocalAudio, cleanupAllCalls]);
 
-  // React to changes in isJoined and isMuted to manage mic state and track activation
+  // React to changes in joinedChannelId and isMuted to manage mic state and track activation
   useEffect(() => {
-    if (isJoined) {
+    if (joinedChannelId) {
       if (!localStreamRef.current) {
         initLocalAudio(isMuted).catch((err) => {
           console.error('Auto-initialization of local audio failed:', err);
@@ -618,19 +626,19 @@ export function useVoiceSession(userId) {
     } else {
       cleanupLocalAudio();
     }
-  }, [isJoined, isMuted, initLocalAudio, cleanupLocalAudio]);
+  }, [joinedChannelId, isMuted, initLocalAudio, cleanupLocalAudio]);
 
   // Clean up all local audio tracks, peer connections, and database row on component unmount or tab close
   useEffect(() => {
     const handleBeforeUnload = () => {
-      cleanupVoiceSession();
+      cleanupVoiceSession('tab-close');
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      cleanupVoiceSession();
+      cleanupVoiceSession('unmount');
     };
   }, [cleanupVoiceSession]);
 
@@ -650,7 +658,7 @@ export function useVoiceSession(userId) {
 
   // Heartbeat to update last_seen every 5 seconds when joined
   useEffect(() => {
-    if (!isJoined || !joinedChannelId || !userId) return;
+    if (!joinedChannelId || !userId) return;
 
     const interval = setInterval(async () => {
       const { error } = await supabase
@@ -665,11 +673,16 @@ export function useVoiceSession(userId) {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [isJoined, joinedChannelId, userId]);
+  }, [joinedChannelId, userId]);
+
+  const handleIncomingSignalRef = useRef(handleIncomingSignal);
+  useEffect(() => {
+    handleIncomingSignalRef.current = handleIncomingSignal;
+  }, [handleIncomingSignal]);
 
   // ---------- WebRTC signaling subscription ----------
   useEffect(() => {
-    if (!joinedChannelId || !isJoined || !userId) return;
+    if (!joinedChannelId || !userId) return;
 
     console.log(`[WebRTC] Subscribing to voice_signals for channel ${joinedChannelId}, receiver ${userId}`);
 
@@ -686,7 +699,7 @@ export function useVoiceSession(userId) {
         (payload) => {
           const signal = payload.new;
           if (signal.channel_id === joinedChannelId) {
-            handleIncomingSignal(signal);
+            handleIncomingSignalRef.current(signal);
           }
         }
       )
@@ -696,12 +709,12 @@ export function useVoiceSession(userId) {
       console.log(`[WebRTC] Unsubscribing from voice_signals for channel ${joinedChannelId}`);
       supabase.removeChannel(channel);
     };
-  }, [joinedChannelId, isJoined, userId, handleIncomingSignal]);
+  }, [joinedChannelId, userId]);
 
   // ---------- WebRTC Call initialization & tracking ----------
   useEffect(() => {
-    if (!isJoined || !micConnected) {
-      cleanupAllCalls();
+    if (!joinedChannelId || !micConnected) {
+      cleanupAllCalls('no-channel-or-mic-disconnected');
       return;
     }
 
@@ -788,7 +801,7 @@ export function useVoiceSession(userId) {
         }
       }
     });
-  }, [participants, isJoined, micConnected, userId, createPeerConnection, sendSignal, cleanupPeerConnection, cleanupAllCalls]);
+  }, [participants, joinedChannelId, micConnected, userId, createPeerConnection, sendSignal, cleanupPeerConnection, cleanupAllCalls]);
 
   // ---------- voice participants realtime subscription ----------
   useEffect(() => {
