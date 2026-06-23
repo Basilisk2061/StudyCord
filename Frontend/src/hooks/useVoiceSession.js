@@ -243,22 +243,28 @@ export function useVoiceSession(userId) {
       updateCallStatus();
     };
 
-    // Flush any ICE candidates that arrived before this connection was created
-    const queued = pendingCandidatesRef.current[otherUserId];
-    if (queued && queued.length > 0) {
-      console.log(`[WebRTC] Flushing ${queued.length} queued ICE candidates for user ${otherUserId}`);
-      queued.forEach(async (candidateData) => {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidateData));
-        } catch (err) {
-          console.error(`[WebRTC] Error adding queued ICE candidate for ${otherUserId}:`, err);
-        }
-      });
-      delete pendingCandidatesRef.current[otherUserId];
-    }
+    // Note: buffered ICE candidates are flushed after setRemoteDescription
+    // in handleOffer / handleAnswer, not here — the remote description is
+    // not yet set when the peer connection is first created.
 
     return pc;
   }, [sendSignal, cleanupPeerConnection, updateCallStatus]);
+
+  const flushPendingIceCandidates = useCallback(async (pc, otherUserId) => {
+    const queued = pendingCandidatesRef.current[otherUserId];
+    if (queued && queued.length > 0) {
+      console.log(`[WebRTC] Processing buffered ICE candidates (${queued.length}) for user ${otherUserId}`);
+      for (const candidateData of queued) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+          console.log(`[WebRTC] Added buffered ICE candidate for user ${otherUserId}`);
+        } catch (err) {
+          console.error(`[WebRTC] Error adding buffered ICE candidate for ${otherUserId}:`, err);
+        }
+      }
+      delete pendingCandidatesRef.current[otherUserId];
+    }
+  }, []);
 
   const handleOffer = useCallback(async (senderId, offerSdp) => {
     console.log(`[WebRTC] Receiving offer from user: ${senderId}`);
@@ -269,6 +275,7 @@ export function useVoiceSession(userId) {
 
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
+      await flushPendingIceCandidates(pc, senderId);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       console.log(`[WebRTC] Sending answer to user: ${senderId}`);
@@ -276,7 +283,7 @@ export function useVoiceSession(userId) {
     } catch (err) {
       console.error(`[WebRTC] Error handling offer from user ${senderId}:`, err);
     }
-  }, [createPeerConnection, sendSignal]);
+  }, [createPeerConnection, sendSignal, flushPendingIceCandidates]);
 
   const handleAnswer = useCallback(async (senderId, answerSdp) => {
     console.log(`[WebRTC] Receiving answer from user: ${senderId}`);
@@ -284,27 +291,29 @@ export function useVoiceSession(userId) {
     if (pc) {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(answerSdp));
+        await flushPendingIceCandidates(pc, senderId);
       } catch (err) {
         console.error(`[WebRTC] Error setting remote answer for user ${senderId}:`, err);
       }
     } else {
       console.warn(`[WebRTC] RTCPeerConnection not found when handling answer from user: ${senderId}`);
     }
-  }, []);
+  }, [flushPendingIceCandidates]);
 
   const handleIceCandidate = useCallback(async (senderId, candidateData) => {
-    console.log(`[WebRTC] Adding ICE candidate from user: ${senderId}`);
     const pc = peerConnectionsRef.current[senderId];
-    if (pc) {
+    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+      // Remote description is set — safe to add the candidate immediately
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+        console.log(`[WebRTC] Added ICE candidate from user ${senderId}`);
       } catch (err) {
         console.error(`[WebRTC] Error adding ICE candidate for user ${senderId}:`, err);
       }
     } else {
-      // Queue the candidate — the peer connection may not exist yet
-      // (common in mesh with 3+ users when signals arrive out of order)
-      console.log(`[WebRTC] Queuing ICE candidate for user ${senderId} (no peer connection yet)`);
+      // Buffer the candidate — either the peer connection doesn't exist yet,
+      // or setRemoteDescription() hasn't completed
+      console.log(`[WebRTC] Buffering ICE candidate from user ${senderId}`);
       if (!pendingCandidatesRef.current[senderId]) {
         pendingCandidatesRef.current[senderId] = [];
       }
