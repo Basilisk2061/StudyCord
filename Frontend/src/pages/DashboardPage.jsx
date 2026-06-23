@@ -4,6 +4,7 @@ import { useAuth } from '../lib/AuthContext';
 import ServerSidebar from '../components/ServerSidebar';
 import ChannelSidebar from '../components/ChannelSidebar';
 import MainPanel from '../components/MainPanel';
+import VoicePanel from '../components/VoicePanel';
 import RightPanel from '../components/RightPanel';
 
 function generateInviteCode() {
@@ -290,7 +291,7 @@ export default function DashboardPage() {
   // ──────────────────────────────────────────────
   // 5. Create a new channel
   // ──────────────────────────────────────────────
-  const handleCreateChannel = async (channelName) => {
+  const handleCreateChannel = async (channelName, channelType = 'text') => {
     if (!activeServerId || !channelName.trim()) return;
 
     try {
@@ -299,7 +300,7 @@ export default function DashboardPage() {
         .insert({
           server_id: activeServerId,
           name: channelName.trim().toLowerCase().replace(/\s+/g, '-'),
-          type: 'text',
+          type: channelType,
         });
 
       if (error) throw error;
@@ -436,22 +437,34 @@ export default function DashboardPage() {
         onSelectChannel={handleSelectChannel}
         onCreateChannel={handleCreateChannel}
       />
-      <MainPanel
-        serverName={activeServerName}
-        channelName={activeChannelName}
-        channelType={activeChannelType}
-        channelId={activeChannelId}
-        userEmail={user?.email}
-        profile={profile}
-        onLogout={handleLogout}
-        channelSidebarOpen={channelSidebarOpen}
-        onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
-        onMobileBack={() => setMobilePanelView('sidebar')}
-        serversCount={servers.length}
-        channelsCount={channels.length}
-        activeServerId={activeServerId}
-        userId={user?.id}
-      />
+      {activeChannelType === 'voice' ? (
+        <VoicePanel
+          channelId={activeChannelId}
+          channelName={activeChannelName}
+          serverName={activeServerName}
+          activeServerId={activeServerId}
+          userId={user?.id}
+          profile={profile}
+          onMobileBack={() => setMobilePanelView('sidebar')}
+        />
+      ) : (
+        <MainPanel
+          serverName={activeServerName}
+          channelName={activeChannelName}
+          channelType={activeChannelType}
+          channelId={activeChannelId}
+          userEmail={user?.email}
+          profile={profile}
+          onLogout={handleLogout}
+          channelSidebarOpen={channelSidebarOpen}
+          onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
+          onMobileBack={() => setMobilePanelView('sidebar')}
+          serversCount={servers.length}
+          channelsCount={channels.length}
+          activeServerId={activeServerId}
+          userId={user?.id}
+        />
+      )}
       <RightPanel
         activeServerId={activeServerId}
         serverInviteCode={activeServerInviteCode}

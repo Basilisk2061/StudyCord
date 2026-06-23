@@ -142,7 +142,7 @@ export default function ProfilePage() {
   return (
     <div className="auth-layout">
       <div className="auth-card" style={{ maxWidth: '440px' }}>
-        <button 
+        <button
           onClick={() => navigate('/dashboard')}
           className="btn btn-secondary"
           style={{ width: 'auto', padding: '6px 12px', fontSize: '12px', marginBottom: '16px', borderRadius: 'var(--radius-xs)' }}
@@ -157,12 +157,12 @@ export default function ProfilePage() {
 
         <form onSubmit={handleSave}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px', padding: '16px', backgroundColor: 'var(--bg-elevated)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-            <div 
-              style={{ 
-                width: '56px', 
-                height: '56px', 
-                borderRadius: '50%', 
-                backgroundColor: 'var(--bg-darkest)', 
+            <div
+              style={{
+                width: '56px',
+                height: '56px',
+                borderRadius: '50%',
+                backgroundColor: 'var(--bg-darkest)',
                 overflow: 'hidden',
                 border: '1px solid var(--border)',
                 display: 'flex',
