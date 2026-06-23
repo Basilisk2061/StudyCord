@@ -153,6 +153,13 @@ export function useVoiceSession(userId) {
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
+        ...(import.meta.env.VITE_TURN_URL
+          ? [{
+              urls: import.meta.env.VITE_TURN_URL,
+              username: import.meta.env.VITE_TURN_USERNAME,
+              credential: import.meta.env.VITE_TURN_CREDENTIAL,
+            }]
+          : [])
       ]
     });
 
@@ -174,9 +181,46 @@ export function useVoiceSession(userId) {
       }
     };
 
+    pc.onconnectionstatechange = () => {
+      console.log(`[WebRTC] Connection state for user ${otherUserId}: ${pc.connectionState}`);
+    };
+
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
       console.log(`[WebRTC] ICE connection state for user ${otherUserId}: ${state}`);
+      
+      if (state === 'connected') {
+        pc.getStats().then((stats) => {
+          let activeCandidatePair = null;
+          stats.forEach((report) => {
+            if (report.type === 'candidate-pair' && (report.selected || report.nominated)) {
+              activeCandidatePair = report;
+            }
+          });
+
+          if (activeCandidatePair) {
+            const localCandidate = stats.get(activeCandidatePair.localCandidateId);
+            const remoteCandidate = stats.get(activeCandidatePair.remoteCandidateId);
+            console.log(`[WebRTC] Selected ICE Candidate Pair for user ${otherUserId}:`, {
+              local: localCandidate ? {
+                candidateType: localCandidate.candidateType,
+                protocol: localCandidate.protocol,
+                ip: localCandidate.ip || localCandidate.address,
+                port: localCandidate.port,
+              } : 'unknown',
+              remote: remoteCandidate ? {
+                candidateType: remoteCandidate.candidateType,
+                protocol: remoteCandidate.protocol,
+                ip: remoteCandidate.ip || remoteCandidate.address,
+                port: remoteCandidate.port,
+              } : 'unknown',
+            });
+          }
+        }).catch((err) => {
+          console.error('[WebRTC] Error getting stats for selected candidate:', err);
+        });
+      }
+
       if (state === 'failed' || state === 'disconnected') {
         console.log(`[WebRTC] Peer disconnected: ${otherUserId} (state: ${state})`);
       }
