@@ -6,6 +6,7 @@ import ChannelSidebar from '../components/ChannelSidebar';
 import MainPanel from '../components/MainPanel';
 import VoicePanel from '../components/VoicePanel';
 import RightPanel from '../components/RightPanel';
+import { useVoiceSession } from '../hooks/useVoiceSession';
 
 function generateInviteCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -19,6 +20,8 @@ function generateInviteCode() {
 export default function DashboardPage() {
   const { session } = useAuth();
   const user = session?.user;
+
+  const voiceSession = useVoiceSession(user?.id);
 
   // ---------- profile ----------
   const [profile, setProfile] = useState(null);
@@ -436,6 +439,7 @@ export default function DashboardPage() {
         activeChannelId={activeChannelId}
         onSelectChannel={handleSelectChannel}
         onCreateChannel={handleCreateChannel}
+        voiceSession={voiceSession}
       />
       {activeChannelType === 'voice' ? (
         <VoicePanel
@@ -446,6 +450,7 @@ export default function DashboardPage() {
           userId={user?.id}
           profile={profile}
           onMobileBack={() => setMobilePanelView('sidebar')}
+          voiceSession={voiceSession}
         />
       ) : (
         <MainPanel

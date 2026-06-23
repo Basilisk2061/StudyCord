@@ -1,362 +1,49 @@
 /**
  * VoicePanel — shows voice channel participants, join/leave/mute controls.
- * No actual WebRTC audio yet — this is the presence system only.
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 
 export default function VoicePanel({
-  channelId, channelName, serverName, activeServerId, userId, profile, onMobileBack,
+  channelId,
+  channelName,
+  serverName,
+  activeServerId,
+  userId,
+  profile,
+  onMobileBack,
+  voiceSession,
 }) {
-  // ---------- state ----------
   const [participants, setParticipants] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [joining, setJoining] = useState(false);
   const [error, setError] = useState('');
-  const [micConnected, setMicConnected] = useState(false);
-  const [callStatus, setCallStatus] = useState('');
 
-  const localStreamRef = useRef(null);
-  const peerConnectionsRef = useRef({});
   const participantsRef = useRef(participants);
 
   useEffect(() => {
     participantsRef.current = participants;
   }, [participants]);
 
-  // Derived: is current user in this voice channel?
-  const myParticipant = participants.find((p) => p.user_id === userId);
-  const isJoined = !!myParticipant;
-  const isMuted = myParticipant?.is_muted ?? false;
+  // Check if current user is joined to this specific channel
+  const isJoinedHere = voiceSession.joinedChannelId === channelId;
+  const isMuted = voiceSession.isMuted;
+  const joining = voiceSession.joining;
 
-  // ---------- local audio stream helpers ----------
-  const cleanupLocalAudio = useCallback(() => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
-    }
-    setMicConnected(false);
-  }, []);
-
-  const initLocalAudio = useCallback(async (currentMuteState) => {
-    try {
-      // Clean up any existing audio stream first
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
-      setMicConnected(false);
-      setError('');
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStreamRef.current = stream;
-      setMicConnected(true);
-
-      // Apply initial mute state to the audio tracks
-      stream.getAudioTracks().forEach((track) => {
-        track.enabled = !currentMuteState;
-      });
-    } catch (err) {
-      console.error('Microphone access denied or failed:', err);
-      setMicConnected(false);
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setError('Microphone permission denied. Please allow microphone access to use voice channels.');
-      } else {
-        setError('Failed to access microphone. Please check your audio devices.');
-      }
-      throw err;
-    }
-  }, []);
-
-  // ---------- WebRTC signaling & peer connection helpers ----------
-
-  const updateCallStatus = useCallback(() => {
-    const connections = Object.values(peerConnectionsRef.current);
-    if (connections.length === 0) {
-      setCallStatus('');
-      return;
-    }
-
-    const states = connections.map((pc) => pc.iceConnectionState);
-    if (states.includes('connected')) {
-      setCallStatus('Voice connected');
-    } else if (states.some((s) => s === 'checking' || s === 'new')) {
-      setCallStatus('Connecting...');
-    } else if (states.every((s) => s === 'failed' || s === 'disconnected' || s === 'closed')) {
-      setCallStatus('Disconnected');
-    }
-  }, []);
-
-  const cleanupPeerConnection = useCallback((otherUserId) => {
-    console.log(`[WebRTC] Cleaning up connection for user: ${otherUserId}`);
-    const pc = peerConnectionsRef.current[otherUserId];
-    if (pc) {
-      try {
-        pc.close();
-      } catch (e) {}
-      delete peerConnectionsRef.current[otherUserId];
-    }
-
-    // Remove remote audio element
-    const audioEl = document.getElementById(`remote-audio-${otherUserId}`);
-    if (audioEl) {
-      try {
-        audioEl.srcObject = null;
-        audioEl.remove();
-      } catch (e) {}
-    }
-    updateCallStatus();
-  }, [updateCallStatus]);
-
-  const cleanupAllCalls = useCallback(() => {
-    console.log('[WebRTC] Cleaning up all active peer connections');
-    Object.keys(peerConnectionsRef.current).forEach((otherUserId) => {
-      cleanupPeerConnection(otherUserId);
-    });
-    setCallStatus('');
-  }, [cleanupPeerConnection]);
-
-  const sendSignal = useCallback(async (receiverId, signalType, signalData) => {
-    if (!channelId || !activeServerId || !userId) return;
-    console.log(`[WebRTC] Sending signaling data (${signalType}) to user ${receiverId}`);
-    const { error: signalErr } = await supabase
-      .from('voice_signals')
-      .insert({
-        server_id: activeServerId,
-        channel_id: channelId,
-        sender_id: userId,
-        receiver_id: receiverId,
-        signal_type: signalType,
-        signal_data: signalData
-      });
-
-    if (signalErr) {
-      console.error(`[WebRTC] Failed to send signal ${signalType} to ${receiverId}:`, signalErr);
-    }
-  }, [channelId, activeServerId, userId]);
-
-  const createPeerConnection = useCallback((otherUserId) => {
-    console.log(`[WebRTC] Initializing RTCPeerConnection for user: ${otherUserId}`);
-
-    // Clean up any existing connection with this user
-    if (peerConnectionsRef.current[otherUserId]) {
-      cleanupPeerConnection(otherUserId);
-    }
-
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-      ]
-    });
-
-    peerConnectionsRef.current[otherUserId] = pc;
-
-    // Add local tracks
-    if (localStreamRef.current) {
-      console.log(`[WebRTC] Adding local audio tracks to peer connection for ${otherUserId}`);
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
-      });
-    } else {
-      console.warn(`[WebRTC] localStreamRef.current is empty when building connection for ${otherUserId}`);
-    }
-
-    // ICE Candidate handler
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log(`[WebRTC] Sending local ICE candidate to user ${otherUserId}`);
-        sendSignal(otherUserId, 'ice-candidate', event.candidate);
-      }
-    };
-
-    // Connection state changes
-    pc.oniceconnectionstatechange = () => {
-      console.log(`[WebRTC] Connection state change for user ${otherUserId}: ${pc.iceConnectionState}`);
-      updateCallStatus();
-    };
-
-    // Incoming remote track handler
-    pc.ontrack = (event) => {
-      console.log(`[WebRTC] Remote media track arrived from user ${otherUserId}`);
-      const remoteStream = event.streams[0];
-
-      let audioEl = document.getElementById(`remote-audio-${otherUserId}`);
-      if (!audioEl) {
-        audioEl = document.createElement('audio');
-        audioEl.id = `remote-audio-${otherUserId}`;
-        audioEl.autoplay = true;
-        audioEl.style.display = 'none';
-        document.body.appendChild(audioEl);
-      }
-      audioEl.srcObject = remoteStream;
-      setCallStatus('Voice connected');
-    };
-
-    return pc;
-  }, [sendSignal, cleanupPeerConnection, updateCallStatus]);
-
-  const handleOffer = useCallback(async (senderId, offerSdp) => {
-    console.log(`[WebRTC] Processing incoming offer from user: ${senderId}`);
-    let pc = peerConnectionsRef.current[senderId];
-    if (!pc) {
-      pc = createPeerConnection(senderId);
-    }
-
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await sendSignal(senderId, 'answer', answer);
-    } catch (err) {
-      console.error(`[WebRTC] Error handling offer from user ${senderId}:`, err);
-    }
-  }, [createPeerConnection, sendSignal]);
-
-  const handleAnswer = useCallback(async (senderId, answerSdp) => {
-    console.log(`[WebRTC] Processing incoming answer from user: ${senderId}`);
-    const pc = peerConnectionsRef.current[senderId];
-    if (pc) {
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(answerSdp));
-      } catch (err) {
-        console.error(`[WebRTC] Error setting remote answer for user ${senderId}:`, err);
-      }
-    } else {
-      console.warn(`[WebRTC] RTCPeerConnection not found when handling answer from user: ${senderId}`);
-    }
-  }, []);
-
-  const handleIceCandidate = useCallback(async (senderId, candidateData) => {
-    console.log(`[WebRTC] Processing incoming ICE candidate from user: ${senderId}`);
-    const pc = peerConnectionsRef.current[senderId];
-    if (pc) {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidateData));
-      } catch (err) {
-        console.error(`[WebRTC] Error adding ICE candidate for user ${senderId}:`, err);
-      }
-    } else {
-      console.warn(`[WebRTC] RTCPeerConnection not found when adding ICE candidate from user: ${senderId}`);
-    }
-  }, []);
-
-  const handleIncomingSignal = useCallback(async (signal) => {
-    const { sender_id, signal_type, signal_data } = signal;
-    console.log(`[WebRTC] Received incoming signal type ${signal_type} from sender ${sender_id}`);
-
-    if (signal_type === 'offer') {
-      await handleOffer(sender_id, signal_data);
-    } else if (signal_type === 'answer') {
-      await handleAnswer(sender_id, signal_data);
-    } else if (signal_type === 'ice-candidate') {
-      await handleIceCandidate(sender_id, signal_data);
-    }
-  }, [handleOffer, handleAnswer, handleIceCandidate]);
-
-  // React to changes in isJoined and isMuted to manage mic state and track activation
-  useEffect(() => {
-    if (isJoined) {
-      if (!localStreamRef.current) {
-        initLocalAudio(isMuted).catch((err) => {
-          console.error('Auto-initialization of local audio failed:', err);
-        });
-      } else {
-        // Toggle track enablement based on isMuted state
-        localStreamRef.current.getAudioTracks().forEach((track) => {
-          track.enabled = !isMuted;
-        });
-      }
-    } else {
-      cleanupLocalAudio();
-    }
-  }, [isJoined, isMuted, initLocalAudio, cleanupLocalAudio]);
-
-  // Clean up all local audio tracks and peer connections on component unmount
-  useEffect(() => {
-    return () => {
-      cleanupLocalAudio();
-      cleanupAllCalls();
-    };
-  }, [cleanupLocalAudio, cleanupAllCalls]);
-
-  // ---------- signaling subscription ----------
-  useEffect(() => {
-    if (!channelId || !isJoined || !userId) return;
-
-    console.log(`[WebRTC] Subscribing to voice_signals for channel ${channelId}, receiver ${userId}`);
-
-    const channel = supabase
-      .channel(`voice_signals:${channelId}:${userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'voice_signals',
-          filter: `receiver_id=eq.${userId}`,
-        },
-        (payload) => {
-          const signal = payload.new;
-          if (signal.channel_id === channelId) {
-            handleIncomingSignal(signal);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      console.log(`[WebRTC] Unsubscribing from voice_signals for channel ${channelId}`);
-      supabase.removeChannel(channel);
-    };
-  }, [channelId, isJoined, userId, handleIncomingSignal]);
-
-  // ---------- call initialization & tracking ----------
-  useEffect(() => {
-    if (!isJoined || !micConnected) {
-      cleanupAllCalls();
-      return;
-    }
-
-    const startConnections = async () => {
-      for (const p of participants) {
-        if (p.user_id === userId) continue;
-
-        const otherUserId = p.user_id;
-
-        // If a connection doesn't exist yet, we decide who initiates
-        if (!peerConnectionsRef.current[otherUserId]) {
-          // Offerer is lexicographically smaller user_id
-          if (userId < otherUserId) {
-            console.log(`[WebRTC] We are smaller ID. Initiating peer connection and sending offer to ${otherUserId}`);
-            const pc = createPeerConnection(otherUserId);
-            try {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              await sendSignal(otherUserId, 'offer', offer);
-            } catch (err) {
-              console.error(`[WebRTC] Error creating or sending offer to ${otherUserId}:`, err);
-            }
-          } else {
-            console.log(`[WebRTC] We are larger ID. Waiting for offer from ${otherUserId}`);
-          }
-        }
-      }
-    };
-
-    startConnections();
-
-    // Clean up connections for participants who left the channel
-    const currentParticipantIds = new Set(participants.map((p) => p.user_id));
-    Object.keys(peerConnectionsRef.current).forEach((otherUserId) => {
-      if (!currentParticipantIds.has(otherUserId)) {
-        console.log(`[WebRTC] User ${otherUserId} is no longer in the participant list. Closing connection.`);
-        cleanupPeerConnection(otherUserId);
-      }
-    });
-  }, [participants, isJoined, micConnected, userId, createPeerConnection, sendSignal, cleanupPeerConnection, cleanupAllCalls]);
-
-  // ---------- fetch participants ----------
+  // ---------- fetch participants for this channel ----------
   const fetchParticipants = useCallback(async () => {
     if (!channelId) return;
+
+    // Delete stale rows older than 20 seconds
+    const staleTime = new Date(Date.now() - 20000).toISOString();
+    supabase
+      .from('voice_participants')
+      .delete()
+      .lt('last_seen', staleTime)
+      .then(({ error: deleteErr }) => {
+        if (deleteErr) {
+          console.error('Failed to clean up stale voice participants:', deleteErr);
+        }
+      });
 
     const { data, error: fetchErr } = await supabase
       .from('voice_participants')
@@ -365,6 +52,7 @@ export default function VoicePanel({
         user_id,
         is_muted,
         joined_at,
+        last_seen,
         profiles (
           username,
           full_name,
@@ -377,40 +65,45 @@ export default function VoicePanel({
     if (fetchErr) {
       console.error('Failed to fetch voice participants:', fetchErr);
     } else {
-      setParticipants(data || []);
+      const cutoff = Date.now() - 15000;
+      const activeParticipants = (data || []).filter((p) => {
+        if (!p.last_seen) return true;
+        return new Date(p.last_seen).getTime() > cutoff;
+      });
+      setParticipants(activeParticipants);
     }
     setLoading(false);
   }, [channelId]);
 
-  // Load on mount / channel change
+  // Load and poll participants
   useEffect(() => {
     setLoading(true);
     setError('');
     fetchParticipants();
+
+    const interval = setInterval(() => {
+      fetchParticipants();
+    }, 5000);
+
+    return () => clearInterval(interval);
   }, [fetchParticipants]);
 
-  // ---------- realtime subscription ----------
+  // ---------- realtime subscription for participants ----------
   useEffect(() => {
     if (!channelId) return;
 
     const channel = supabase
-      .channel(`voice_participants_realtime:${channelId}`)
+      .channel(`voice_participants_panel:${channelId}`)
       .on(
         'postgres_changes',
         {
-          event: '*',               // INSERT, UPDATE, DELETE
+          event: '*',
           schema: 'public',
           table: 'voice_participants',
         },
         (payload) => {
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
             if (payload.new.channel_id === channelId) {
-              if (payload.eventType === 'INSERT') {
-                if (payload.new.user_id !== userId) {
-                  console.log("Voice participant joined");
-                  new Audio('/sounds/user-join.mp3').play().catch(e => console.error("Audio play error:", e));
-                }
-              }
               fetchParticipants();
             }
           } else if (payload.eventType === 'DELETE') {
@@ -422,8 +115,6 @@ export default function VoicePanel({
               new Audio('/sounds/user-leave.mp3').play().catch(e => console.error("Audio play error:", e));
             }
 
-            // Delete payload.old only contains the primary key `id` by default.
-            // If the deleted participant is currently in our state, remove it immediately.
             setParticipants((prev) => {
               const exists = prev.some((p) => p.id === deletedId);
               if (exists) {
@@ -442,102 +133,20 @@ export default function VoicePanel({
     };
   }, [channelId, fetchParticipants, userId]);
 
-  // ---------- join voice ----------
   const handleJoin = async () => {
-    if (!channelId || !activeServerId || !userId) return;
-    setJoining(true);
-    setError('');
-
     try {
-      // First request microphone permission
-      await initLocalAudio(false);
-
-      // Leave any other voice channel in this server first
-      const { error: leaveErr } = await supabase
-        .from('voice_participants')
-        .delete()
-        .eq('server_id', activeServerId)
-        .eq('user_id', userId);
-
-      if (leaveErr) console.error('Leave cleanup error:', leaveErr);
-
-      // Join this channel
-      const { error: joinErr } = await supabase
-        .from('voice_participants')
-        .insert({
-          server_id: activeServerId,
-          channel_id: channelId,
-          user_id: userId,
-          is_muted: false,
-        });
-
-      if (joinErr) {
-        // Handle unique constraint (already joined)
-        if (joinErr.code === '23505') {
-          // Already joined — ignore
-        } else {
-          throw joinErr;
-        }
-      }
-
-      await fetchParticipants();
+      await voiceSession.handleJoin(channelId, channelName, activeServerId);
+      fetchParticipants();
     } catch (err) {
-      console.error('Failed to join voice:', err);
-      // If error is not a mic permission error (which sets error state in initLocalAudio), set a generic one
-      if (err.name !== 'NotAllowedError' && err.name !== 'PermissionDeniedError') {
-        setError('Failed to join voice channel.');
-      }
-      cleanupLocalAudio();
+      setError(voiceSession.error || 'Failed to join voice channel.');
     }
-
-    setJoining(false);
   };
 
-  // ---------- leave voice ----------
   const handleLeave = async () => {
-    if (!channelId || !userId) return;
-    setError('');
-
-    // Stop local audio tracks and peer connections
-    cleanupLocalAudio();
-    cleanupAllCalls();
-
-    // Update local state immediately
-    setParticipants((prev) => prev.filter((p) => p.user_id !== userId));
-
-    const { error: leaveErr } = await supabase
-      .from('voice_participants')
-      .delete()
-      .eq('channel_id', channelId)
-      .eq('user_id', userId);
-
-    if (leaveErr) {
-      console.error('Failed to leave voice:', leaveErr);
-      setError('Failed to leave voice channel.');
-      fetchParticipants();
-    } else {
-      fetchParticipants();
-    }
+    await voiceSession.handleLeave();
+    fetchParticipants();
   };
 
-  // ---------- toggle mute ----------
-  const handleToggleMute = async () => {
-    if (!myParticipant) return;
-    setError('');
-
-    const { error: muteErr } = await supabase
-      .from('voice_participants')
-      .update({ is_muted: !isMuted })
-      .eq('id', myParticipant.id);
-
-    if (muteErr) {
-      console.error('Failed to toggle mute:', muteErr);
-      setError('Failed to change mute state.');
-    }
-    // Realtime will update
-  };
-
-  // ---------- format join time ----------
   const formatJoinTime = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -571,21 +180,21 @@ export default function VoicePanel({
       </div>
 
       {/* Error */}
-      {error && (
+      {(error || voiceSession.error) && (
         <div className="voice-panel__error">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10" />
             <line x1="15" y1="9" x2="9" y2="15" />
             <line x1="9" y1="9" x2="15" y2="15" />
           </svg>
-          <span>{error}</span>
+          <span>{error || voiceSession.error}</span>
           <button className="voice-panel__error-dismiss" onClick={() => setError('')}>×</button>
         </div>
       )}
 
       {/* Controls */}
       <div className="voice-panel__controls">
-        {!isJoined ? (
+        {!isJoinedHere ? (
           <button
             className="voice-panel__btn voice-panel__btn--join"
             onClick={handleJoin}
@@ -613,7 +222,7 @@ export default function VoicePanel({
           <div className="voice-panel__joined-controls">
             <button
               className={`voice-panel__btn voice-panel__btn--mute ${isMuted ? 'voice-panel__btn--muted' : ''}`}
-              onClick={handleToggleMute}
+              onClick={voiceSession.handleToggleMute}
               title={isMuted ? 'Unmute' : 'Mute'}
             >
               {isMuted ? (
@@ -701,7 +310,6 @@ export default function VoicePanel({
                         {initial}
                       </div>
                     )}
-                    {/* Speaking ring placeholder (no audio yet) */}
                     {!p.is_muted && (
                       <div className="voice-participant__ring" />
                     )}
@@ -738,12 +346,12 @@ export default function VoicePanel({
       </div>
 
       {/* Status bar */}
-      {isJoined && (
+      {isJoinedHere && (
         <div className="voice-panel__status-bar">
           <div className={`voice-panel__status-dot ${isMuted ? 'voice-panel__status-dot--muted' : 'voice-panel__status-dot--connected'}`} />
           <span>
-            {isMuted ? 'Muted' : (callStatus || 'Connected')} to {channelName}
-            {micConnected && (
+            {isMuted ? 'Muted' : (voiceSession.callStatus || 'Connected')} to {channelName}
+            {voiceSession.micConnected && (
               <span className="voice-panel__status-mic" style={{ color: 'var(--online, #10B981)', marginLeft: '6px', fontWeight: '500' }}>
                 • Mic connected
               </span>

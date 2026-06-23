@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import VoiceSessionBar from './VoiceSessionBar';
 
 function HashIcon() {
   return <span style={{ fontSize: '14px', fontWeight: 700, opacity: 0.45, lineHeight: 1 }}>#</span>;
@@ -17,6 +18,7 @@ function VoiceIcon() {
 export default function ChannelSidebar({
   serverId, serverName, channels, channelsLoading, channelsError,
   activeChannelId, onSelectChannel, onCreateChannel,
+  voiceSession,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
@@ -205,6 +207,16 @@ export default function ChannelSidebar({
           </div>
         )}
       </nav>
+      {voiceSession && voiceSession.joinedChannelId && (
+        <VoiceSessionBar
+          channelName={voiceSession.joinedChannelName}
+          micConnected={voiceSession.micConnected}
+          callStatus={voiceSession.callStatus}
+          isMuted={voiceSession.isMuted}
+          onToggleMute={voiceSession.handleToggleMute}
+          onLeave={voiceSession.handleLeave}
+        />
+      )}
     </aside>
   );
 }
