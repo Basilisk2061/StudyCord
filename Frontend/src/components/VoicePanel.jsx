@@ -36,8 +36,8 @@ export default function VoicePanel({
   const fetchParticipants = useCallback(async () => {
     if (!channelId) return;
 
-    // Delete stale rows older than 40 seconds
-    const staleTime = new Date(Date.now() - 40000).toISOString();
+    // Delete stale rows older than 60 seconds
+    const staleTime = new Date(Date.now() - 60000).toISOString();
     supabase
       .from('voice_participants')
       .delete()
@@ -68,7 +68,7 @@ export default function VoicePanel({
     if (fetchErr) {
       console.error('Failed to fetch voice participants:', fetchErr);
     } else {
-      const cutoff = Date.now() - 30000;
+      const cutoff = Date.now() - 45000;
       const rawCount = data ? data.length : 0;
       
       const activeParticipants = (data || []).filter((p) => {
@@ -79,7 +79,7 @@ export default function VoicePanel({
         if (!p.last_seen) return true;
         const lastSeenTime = new Date(p.last_seen).getTime();
         if (lastSeenTime > Date.now()) return true;
-        return Date.now() - lastSeenTime < 30000;
+        return Date.now() - lastSeenTime < 45000;
       });
 
       console.log(`[VoicePanelSync] Participants fetched for channel ${channelId}:`, {
@@ -170,6 +170,13 @@ export default function VoicePanel({
 
   return (
     <div className="voice-panel" id="voice-panel">
+      <style>{`
+        @keyframes voiceStatusPulse {
+          0% { opacity: 0.5; }
+          50% { opacity: 1; }
+          100% { opacity: 0.5; }
+        }
+      `}</style>
       {/* Header */}
       <div className="voice-panel__header">
         {onMobileBack && (
@@ -205,6 +212,18 @@ export default function VoicePanel({
           </svg>
           <span>{error || voiceSession.error}</span>
           <button className="voice-panel__error-dismiss" onClick={() => setError('')}>×</button>
+        </div>
+      )}
+
+      {/* TURN Warning */}
+      {voiceSession.turnWarning && (
+        <div className="voice-panel__warning" style={{ backgroundColor: 'rgba(245, 158, 11, 0.1)', border: '1px solid var(--warning, #F59E0B)', color: 'var(--warning, #F59E0B)', padding: '8px 12px', borderRadius: '6px', margin: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <span>{voiceSession.turnWarning}</span>
         </div>
       )}
 
@@ -307,6 +326,7 @@ export default function VoicePanel({
               const avatarUrl = p.profiles?.avatar_url;
               const initial = username[0]?.toUpperCase() || '?';
               const isMe = p.user_id === userId;
+              const connStatus = isMe ? 'connected' : (voiceSession.connectionStatuses?.[p.user_id] || 'disconnected');
 
               return (
                 <div
@@ -333,9 +353,32 @@ export default function VoicePanel({
 
                   {/* Info */}
                   <div className="voice-participant__info">
-                    <span className="voice-participant__name">
+                    <span className="voice-participant__name" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                       {username}
                       {isMe && <span className="voice-participant__you-badge">You</span>}
+                      {isJoinedHere && (
+                        <span 
+                          className={`voice-participant__status-badge voice-participant__status-badge--${connStatus}`}
+                          style={{
+                            fontSize: '9px',
+                            padding: '1px 5px',
+                            borderRadius: '8px',
+                            fontWeight: '600',
+                            textTransform: 'uppercase',
+                            backgroundColor: connStatus === 'connected' ? 'rgba(16, 185, 129, 0.15)' :
+                                             connStatus === 'connecting' ? 'rgba(245, 158, 11, 0.15)' :
+                                             connStatus === 'reconnecting' ? 'rgba(245, 158, 11, 0.15)' :
+                                             'rgba(107, 114, 128, 0.15)',
+                            color: connStatus === 'connected' ? '#10B981' :
+                                   connStatus === 'connecting' ? '#F59E0B' :
+                                   connStatus === 'reconnecting' ? '#F59E0B' :
+                                   '#9CA3AF',
+                            animation: connStatus === 'reconnecting' ? 'voiceStatusPulse 1.5s infinite' : 'none'
+                          }}
+                        >
+                          {connStatus}
+                        </span>
+                      )}
                     </span>
                     <span className="voice-participant__meta">
                       Joined at {formatJoinTime(p.joined_at)}
