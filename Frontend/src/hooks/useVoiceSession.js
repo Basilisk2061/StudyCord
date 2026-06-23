@@ -781,14 +781,37 @@ export function useVoiceSession(userId) {
           const connState = existingPc.connectionState;
           const iceState = existingPc.iceConnectionState;
 
-          // Only re-establish if connection is truly dead
-          const isTerminal = connState === 'failed' || connState === 'closed';
-          if (!isTerminal) {
-            // Connection is alive, connecting, or temporarily disconnected — leave it alone
+          // If a reconnect timer is already scheduled for this user, let the timer handle it
+          if (reconnectTimeoutsRef.current[otherUserId]) {
+            console.log(`[WebRTC] failed peer detected but reconnect timer already scheduled for ${otherUserId} — skipping immediate recreate`);
             continue;
           }
 
-          console.log(`[WebRTC] Existing connection to ${otherUserId} is terminal (conn=${connState}, ice=${iceState}), re-establishing`);
+          // If the peer is failed but reconnecting flag is set, let reconnectPeer handle it
+          if (reconnectingRef.current[otherUserId]) {
+            console.log(`[WebRTC] Peer ${otherUserId} is being reconnected — skipping immediate recreate`);
+            continue;
+          }
+
+          // 'disconnected' is NOT terminal — browser may recover on its own
+          if (connState === 'disconnected') {
+            continue;
+          }
+
+          // Only 'closed' is immediately terminal.
+          // 'failed' should be handled by the reconnect timer triggered from onconnectionstatechange.
+          if (connState === 'failed') {
+            console.log(`[WebRTC] Peer ${otherUserId} is failed with no reconnect timer — reconnect timer is responsible for cleanup, scheduling now`);
+            triggerReconnect(otherUserId);
+            continue;
+          }
+
+          if (connState !== 'closed') {
+            // Connection is alive or connecting — leave it alone
+            continue;
+          }
+
+          console.log(`[WebRTC] Existing connection to ${otherUserId} is closed (conn=${connState}, ice=${iceState}), re-establishing`);
           cleanupPeerConnection(otherUserId);
         }
 
