@@ -234,8 +234,14 @@ export function useVoiceSession(userId) {
       });
 
       if (connState === 'failed') {
-        console.log(`[WebRTC] connectionState failed for ${otherUserId}, scheduling reconnect`);
+        console.log(`[WebRTC] failed detected, waiting 15s for user ${otherUserId}`);
         triggerReconnect(otherUserId);
+      } else if (connState === 'connected' || connState === 'completed') {
+        if (reconnectTimeoutsRef.current[otherUserId]) {
+          console.log(`[WebRTC] failure recovered, cancelling reconnect for user ${otherUserId}`);
+          clearTimeout(reconnectTimeoutsRef.current[otherUserId]);
+          delete reconnectTimeoutsRef.current[otherUserId];
+        }
       }
     };
 
@@ -249,17 +255,15 @@ export function useVoiceSession(userId) {
 
       if (state === 'connected' || state === 'completed') {
         if (reconnectTimeoutsRef.current[otherUserId]) {
-          console.log(`[WebRTC] ICE recovered for ${otherUserId}, clearing reconnect timer`);
+          console.log(`[WebRTC] failure recovered, cancelling reconnect for user ${otherUserId}`);
           clearTimeout(reconnectTimeoutsRef.current[otherUserId]);
           delete reconnectTimeoutsRef.current[otherUserId];
         }
         delete reconnectingRef.current[otherUserId];
       } else if (state === 'disconnected') {
-        console.log(`[WebRTC] ICE disconnected for ${otherUserId}, scheduling reconnect`);
-        triggerReconnect(otherUserId);
+        console.log(`[WebRTC] disconnected ignored, waiting for browser recovery for user ${otherUserId}`);
       } else if (state === 'failed') {
-        console.log(`[WebRTC] ICE failed for ${otherUserId}, scheduling reconnect`);
-        triggerReconnect(otherUserId);
+        console.log(`[WebRTC] ICE failed for user ${otherUserId}, ignoring and waiting for connectionState to transition`);
       }
 
       updateCallStatus();
@@ -350,7 +354,7 @@ export function useVoiceSession(userId) {
       [otherUserId]: 'reconnecting',
     }));
 
-    console.log(`[WebRTC] Scheduling reconnect for ${otherUserId} in 10 seconds`);
+    console.log(`[WebRTC] Scheduling reconnect for ${otherUserId} in 15 seconds`);
     reconnectTimeoutsRef.current[otherUserId] = setTimeout(async () => {
       delete reconnectTimeoutsRef.current[otherUserId];
 
@@ -365,9 +369,14 @@ export function useVoiceSession(userId) {
         return;
       }
 
-      console.log(`[WebRTC] Executing reconnect for ${otherUserId} after delay`);
-      await reconnectPeer(otherUserId);
-    }, 10000);
+      const pc = peerConnectionsRef.current[otherUserId];
+      if (pc && pc.connectionState === 'failed') {
+        console.log(`[WebRTC] reconnecting after 15s confirmed failure for user ${otherUserId}`);
+        await reconnectPeer(otherUserId);
+      } else {
+        console.log(`[WebRTC] Peer connection for ${otherUserId} is no longer in failed state, cancelling reconnect execution`);
+      }
+    }, 15000);
   }, [reconnectPeer]);
 
   const flushPendingIceCandidates = useCallback(async (pc, otherUserId) => {
