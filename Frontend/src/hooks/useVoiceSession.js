@@ -470,14 +470,37 @@ export function useVoiceSession(userId) {
       console.error('Failed to fetch voice participants:', fetchErr);
     } else {
       const cutoff = Date.now() - 30000;
+      const rawCount = data ? data.length : 0;
+      
       const activeParticipants = (data || []).filter((p) => {
+        // 1. Current user is never filtered out
+        if (p.user_id === userId) return true;
+
+        // 2. Remote users with active (non-dead) peer connections are never filtered out
+        const pc = peerConnectionsRef.current[p.user_id];
+        if (pc && pc.connectionState !== 'failed' && pc.connectionState !== 'closed') {
+          return true;
+        }
+
+        // 3. Check last_seen with safe threshold (tolerating future clock drift)
         if (!p.last_seen) return true;
-        return new Date(p.last_seen).getTime() > cutoff;
+        const lastSeenTime = new Date(p.last_seen).getTime();
+        if (lastSeenTime > Date.now()) return true;
+        return Date.now() - lastSeenTime < 30000;
       });
+
+      console.log(`[VoiceSync] Participants fetched:`, {
+        activeVoiceChannelId: joinedChannelId,
+        currentUserId: userId,
+        rawParticipantCount: rawCount,
+        filteredParticipantCount: activeParticipants.length,
+        participantUserIds: activeParticipants.map(p => p.user_id)
+      });
+
       setParticipants(activeParticipants);
     }
     setLoading(false);
-  }, [joinedChannelId]);
+  }, [joinedChannelId, userId]);
 
   // ---------- join voice ----------
   const handleJoin = async (channelId, channelName, serverId) => {
@@ -834,21 +857,17 @@ export function useVoiceSession(userId) {
             const deletedId = payload.old.id;
             const deletedParticipant = participantsRef.current.find(p => p.id === deletedId);
             
-            if (deletedParticipant && deletedParticipant.user_id !== userId) {
-              console.log('Voice participant left');
-              new Audio('/sounds/user-leave.mp3').play().catch(e => console.error('Audio play error:', e));
-              // Mark the user as explicitly left so we clean them up immediately in startConnections effect
-              explicitlyLeftRef.current.add(deletedParticipant.user_id);
-            }
-
-            setParticipants((prev) => {
-              const exists = prev.some((p) => p.id === deletedId);
-              if (exists) {
-                return prev.filter((p) => p.id !== deletedId);
+            if (deletedParticipant) {
+              if (deletedParticipant.user_id !== userId) {
+                console.log('Voice participant left');
+                new Audio('/sounds/user-leave.mp3').play().catch(e => console.error('Audio play error:', e));
+                // Mark the user as explicitly left so we clean them up immediately in startConnections effect
+                explicitlyLeftRef.current.add(deletedParticipant.user_id);
               }
-              return prev;
-            });
-            fetchParticipants();
+
+              setParticipants((prev) => prev.filter((p) => p.id !== deletedId));
+              fetchParticipants();
+            }
           }
         }
       )

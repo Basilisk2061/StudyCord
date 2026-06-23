@@ -36,8 +36,8 @@ export default function VoicePanel({
   const fetchParticipants = useCallback(async () => {
     if (!channelId) return;
 
-    // Delete stale rows older than 20 seconds
-    const staleTime = new Date(Date.now() - 20000).toISOString();
+    // Delete stale rows older than 40 seconds
+    const staleTime = new Date(Date.now() - 40000).toISOString();
     supabase
       .from('voice_participants')
       .delete()
@@ -68,15 +68,32 @@ export default function VoicePanel({
     if (fetchErr) {
       console.error('Failed to fetch voice participants:', fetchErr);
     } else {
-      const cutoff = Date.now() - 15000;
+      const cutoff = Date.now() - 30000;
+      const rawCount = data ? data.length : 0;
+      
       const activeParticipants = (data || []).filter((p) => {
+        // 1. Current user is never filtered out
+        if (p.user_id === userId) return true;
+
+        // 2. Check last_seen with safe threshold (tolerating future clock drift)
         if (!p.last_seen) return true;
-        return new Date(p.last_seen).getTime() > cutoff;
+        const lastSeenTime = new Date(p.last_seen).getTime();
+        if (lastSeenTime > Date.now()) return true;
+        return Date.now() - lastSeenTime < 30000;
       });
+
+      console.log(`[VoicePanelSync] Participants fetched for channel ${channelId}:`, {
+        viewingChannelId: channelId,
+        currentUserId: userId,
+        rawParticipantCount: rawCount,
+        filteredParticipantCount: activeParticipants.length,
+        participantUserIds: activeParticipants.map(p => p.user_id)
+      });
+
       setParticipants(activeParticipants);
     }
     setLoading(false);
-  }, [channelId]);
+  }, [channelId, userId]);
 
   // Load and poll participants
   useEffect(() => {
@@ -113,19 +130,15 @@ export default function VoicePanel({
             const deletedId = payload.old.id;
             const deletedParticipant = participantsRef.current.find(p => p.id === deletedId);
             
-            if (deletedParticipant && deletedParticipant.user_id !== userId) {
-              console.log("Voice participant left");
-              new Audio('/sounds/user-leave.mp3').play().catch(e => console.error("Audio play error:", e));
-            }
-
-            setParticipants((prev) => {
-              const exists = prev.some((p) => p.id === deletedId);
-              if (exists) {
-                return prev.filter((p) => p.id !== deletedId);
+            if (deletedParticipant) {
+              if (deletedParticipant.user_id !== userId) {
+                console.log("Voice participant left");
+                new Audio('/sounds/user-leave.mp3').play().catch(e => console.error("Audio play error:", e));
               }
-              return prev;
-            });
-            fetchParticipants();
+
+              setParticipants((prev) => prev.filter((p) => p.id !== deletedId));
+              fetchParticipants();
+            }
           }
         }
       )
