@@ -29,6 +29,29 @@ function getAvatarBg(username) {
   return AVATAR_COLORS[index];
 }
 
+function SkeletonLoader({ lines = 5, label = 'Generating...' }) {
+  const lineWidths = ['100%', '85%', '92%', '68%', '88%', '60%'];
+  return (
+    <div className="ai-loading-box">
+      <div className="ai-loading-header">
+        <svg className="ai-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+        <span>{label}</span>
+      </div>
+      <div style={{ marginTop: '4px' }}>
+        {Array.from({ length: lines }).map((_, i) => (
+          <div
+            key={i}
+            className="skeleton-line"
+            style={{ width: lineWidths[i % lineWidths.length] }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function RightPanel({
   activeServerId,
   serverInviteCode,
@@ -157,7 +180,7 @@ export default function RightPanel({
   };
 
   const fetchSummary = async (docId = uploadedDoc?.docId) => {
-    if (!docId) return;
+    if (!docId || loadingSummary) return;
     setLoadingSummary(true);
     try {
       const response = await fetch('http://127.0.0.1:8000/api/rag/summary', {
@@ -177,7 +200,7 @@ export default function RightPanel({
   };
 
   const fetchFlashcards = async () => {
-    if (!uploadedDoc?.docId) return;
+    if (!uploadedDoc?.docId || loadingFlashcards) return;
     if (flashcards.length > 0) return;
     setLoadingFlashcards(true);
     try {
@@ -200,7 +223,7 @@ export default function RightPanel({
   };
 
   const fetchMcqs = async () => {
-    if (!uploadedDoc?.docId) return;
+    if (!uploadedDoc?.docId || loadingMcqs) return;
     if (mcqs.length > 0) return;
     setLoadingMcqs(true);
     try {
@@ -373,7 +396,7 @@ export default function RightPanel({
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 8px 10px;
+          padding: 8px 12px;
           background-color: var(--bg-surface);
           border: 1px solid var(--border);
           border-radius: var(--radius-sm);
@@ -381,7 +404,7 @@ export default function RightPanel({
           gap: 8px;
         }
         .ai-sidebar-doc__name {
-          font-size: 11px;
+          font-size: 12px;
           font-weight: 500;
           white-space: nowrap;
           overflow: hidden;
@@ -391,21 +414,21 @@ export default function RightPanel({
         .ai-sidebar-tabs {
           display: flex;
           background-color: var(--bg-darkest);
-          padding: 2px;
+          padding: 3px;
           border-radius: var(--radius-xs);
           margin-bottom: 12px;
-          gap: 2px;
+          gap: 3px;
         }
         .ai-sidebar-tab {
           flex: 1;
           background: transparent;
-          border: none;
+          border: 1px solid transparent;
           color: var(--text-muted);
-          padding: 4px 2px;
-          font-size: 10px;
+          padding: 5px 4px;
+          font-size: 11px;
           font-weight: 600;
           cursor: pointer;
-          border-radius: 2px;
+          border-radius: var(--radius-xs);
           text-align: center;
           transition: all var(--transition);
         }
@@ -415,28 +438,82 @@ export default function RightPanel({
         .ai-sidebar-tab--active {
           background-color: var(--bg-elevated);
           color: var(--text-primary);
-          border: 1px solid var(--border);
+          border-color: var(--border);
         }
         .ai-sidebar-content {
-          max-height: 280px;
+          max-height: 340px;
           overflow-y: auto;
-          font-size: 12px;
-          padding-right: 2px;
+          font-size: 12.5px;
+          padding-right: 4px;
         }
-        .ai-sidebar-content::-webkit-scrollbar { width: 3px; }
-        .ai-sidebar-content::-webkit-scrollbar-thumb { background-color: var(--border); }
+        .ai-sidebar-content::-webkit-scrollbar { width: 4px; }
+        .ai-sidebar-content::-webkit-scrollbar-thumb { background-color: var(--border); border-radius: 2px; }
+
+        /* Smooth Content Fade In */
+        .ai-fade-in {
+          animation: aiFadeIn 250ms ease-out forwards;
+        }
+        @keyframes aiFadeIn {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Loading Spinner */
+        @keyframes aiSpin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        .ai-spinner {
+          animation: aiSpin 0.75s linear infinite;
+        }
+        .ai-loading-box {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          padding: 12px 8px;
+        }
+        .ai-loading-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 12px;
+          font-weight: 500;
+          color: var(--text-secondary);
+        }
+
+        /* Skeleton Lines & Shimmer */
+        @keyframes aiShimmer {
+          0% { background-position: -250px 0; }
+          100% { background-position: 250px 0; }
+        }
+        .skeleton-line {
+          height: 11px;
+          border-radius: 4px;
+          background: linear-gradient(90deg, #1e1e1e 0%, #2e2e2e 50%, #1e1e1e 100%);
+          background-size: 500px 100%;
+          animation: aiShimmer 1.4s infinite ease-in-out;
+          margin-bottom: 8px;
+        }
         
         .ai-sidebar-summary__sec {
-          margin-bottom: 12px;
+          margin-bottom: 14px;
+          background-color: var(--bg-surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-sm);
+          padding: 10px 12px;
         }
         .ai-sidebar-summary__sec-title {
+          font-size: 11px;
           font-weight: 600;
-          color: #FFFFFF;
-          margin-bottom: 4px;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: var(--text-muted);
+          margin-bottom: 6px;
         }
         .ai-sidebar-concept-row {
-          padding: 6px;
+          padding: 6px 0;
           border-bottom: 1px solid var(--border);
+          line-height: 1.45;
         }
         .ai-sidebar-concept-row:last-child {
           border-bottom: none;
@@ -448,35 +525,38 @@ export default function RightPanel({
           flex-direction: column;
           gap: 10px;
           margin-bottom: 10px;
-          max-height: 200px;
+          max-height: 240px;
           overflow-y: auto;
         }
-        .ai-sidebar-chat-list::-webkit-scrollbar { width: 2px; }
+        .ai-sidebar-chat-list::-webkit-scrollbar { width: 3px; }
         .ai-sidebar-bubble {
-          padding: 6px 10px;
+          padding: 8px 12px;
           border-radius: var(--radius-sm);
-          line-height: 1.4;
+          line-height: 1.45;
           word-break: break-word;
-          max-width: 90%;
+          max-width: 92%;
+          font-size: 12px;
         }
         .ai-sidebar-bubble--ai {
           background-color: var(--bg-surface);
           border: 1px solid var(--border);
           align-self: flex-start;
+          color: var(--text-secondary);
         }
         .ai-sidebar-bubble--user {
           background-color: #FFFFFF;
           color: #000000;
           align-self: flex-end;
+          font-weight: 450;
         }
         .ai-sidebar-chat-form {
           display: flex;
-          gap: 4px;
+          gap: 6px;
         }
         .ai-sidebar-chat-input {
           flex: 1;
-          padding: 6px 10px;
-          font-size: 11px;
+          padding: 8px 12px;
+          font-size: 12px;
           border: 1px solid var(--border);
           border-radius: var(--radius-xs);
           background-color: var(--bg-darkest);
@@ -487,9 +567,10 @@ export default function RightPanel({
           background-color: #FFFFFF;
           color: #000000;
           border: none;
-          padding: 0 8px;
+          padding: 0 12px;
           border-radius: var(--radius-xs);
           cursor: pointer;
+          font-weight: 600;
         }
 
         /* Sidebar Flashcard */
@@ -497,8 +578,8 @@ export default function RightPanel({
           border: 1px solid var(--border);
           border-radius: var(--radius-md);
           background-color: var(--bg-surface);
-          height: 130px;
-          padding: 12px;
+          min-height: 140px;
+          padding: 16px;
           display: flex;
           flex-direction: column;
           align-items: center;
@@ -506,16 +587,18 @@ export default function RightPanel({
           text-align: center;
           cursor: pointer;
           user-select: none;
-          transition: all 0.3s ease;
+          transition: all 0.25s ease;
         }
         .ai-sidebar-card--flipped {
           background-color: var(--bg-elevated);
           border-color: var(--border-subtle);
         }
         .ai-sidebar-card__content {
-          font-size: 12px;
+          font-size: 12.5px;
           font-weight: 500;
-          line-height: 1.4;
+          line-height: 1.5;
+          margin-top: 6px;
+          margin-bottom: 6px;
         }
 
         /* Sidebar MCQ */
@@ -523,17 +606,18 @@ export default function RightPanel({
           background-color: var(--bg-surface);
           border: 1px solid var(--border);
           border-radius: var(--radius-sm);
-          padding: 10px;
+          padding: 12px;
           margin-bottom: 10px;
         }
         .ai-sidebar-mcq-opt {
-          padding: 6px 8px;
+          padding: 8px 10px;
           border: 1px solid var(--border);
           border-radius: var(--radius-xs);
           background-color: var(--bg-darkest);
-          margin-top: 4px;
+          margin-top: 6px;
           cursor: pointer;
-          font-size: 11px;
+          font-size: 11.5px;
+          line-height: 1.4;
           transition: all var(--transition);
         }
         .ai-sidebar-mcq-opt--selected {
@@ -1132,14 +1216,12 @@ export default function RightPanel({
               {activeTab === 'summary' && (
                 <div>
                   {loadingSummary ? (
-                    <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--text-muted)' }}>
-                      Generating summary...
-                    </div>
+                    <SkeletonLoader lines={5} label="Generating summary..." />
                   ) : summaryData ? (
-                    <div>
+                    <div className="ai-fade-in">
                       <div className="ai-sidebar-summary__sec">
                         <div className="ai-sidebar-summary__sec-title">Executive Summary</div>
-                        <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                        <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '12.5px' }}>
                           {summaryData.executive_summary}
                         </p>
                       </div>
@@ -1159,16 +1241,21 @@ export default function RightPanel({
                       {summaryData.key_points && summaryData.key_points.length > 0 && (
                         <div className="ai-sidebar-summary__sec">
                           <div className="ai-sidebar-summary__sec-title">Key Takeaways</div>
-                          <ul style={{ paddingLeft: '14px', margin: 0, color: 'var(--text-secondary)' }}>
+                          <ul style={{ paddingLeft: '16px', margin: 0, color: 'var(--text-secondary)' }}>
                             {summaryData.key_points.map((p, i) => (
-                              <li key={i} style={{ marginBottom: '4px' }}>{p}</li>
+                              <li key={i} style={{ marginBottom: '6px', lineHeight: 1.45 }}>{p}</li>
                             ))}
                           </ul>
                         </div>
                       )}
                     </div>
                   ) : (
-                    <button className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={() => fetchSummary()}>
+                    <button
+                      className="btn btn-primary"
+                      style={{ padding: '8px 16px', fontSize: '12px' }}
+                      onClick={() => fetchSummary()}
+                      disabled={loadingSummary}
+                    >
                       Generate Summary
                     </button>
                   )}
@@ -1176,7 +1263,7 @@ export default function RightPanel({
               )}
 
               {activeTab === 'chat' && (
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }} className="ai-fade-in">
                   <div className="ai-sidebar-chat-list">
                     {chatMessages.map(msg => (
                       <div 
@@ -1187,7 +1274,10 @@ export default function RightPanel({
                       </div>
                     ))}
                     {sendingChat && (
-                      <div className="ai-sidebar-bubble ai-sidebar-bubble--ai" style={{ opacity: 0.6 }}>
+                      <div className="ai-sidebar-bubble ai-sidebar-bubble--ai" style={{ opacity: 0.85, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <svg className="ai-spinner" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                        </svg>
                         Thinking...
                       </div>
                     )}
@@ -1213,11 +1303,9 @@ export default function RightPanel({
               {activeTab === 'flashcards' && (
                 <div>
                   {loadingFlashcards ? (
-                    <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--text-muted)' }}>
-                      Generating cards...
-                    </div>
+                    <SkeletonLoader lines={4} label="Generating flashcards..." />
                   ) : flashcards.length > 0 ? (
-                    <div>
+                    <div className="ai-fade-in">
                       <div 
                         className={`ai-sidebar-card ${flashcardFlipped ? 'ai-sidebar-card--flipped' : ''}`}
                         onClick={() => setFlashcardFlipped(!flashcardFlipped)}
@@ -1230,12 +1318,15 @@ export default function RightPanel({
                             ? flashcards[currentFlashcardIndex].answer 
                             : flashcards[currentFlashcardIndex].question}
                         </div>
+                        <span style={{ fontSize: '9px', color: 'var(--text-muted)', opacity: 0.6, marginTop: 'auto' }}>
+                          Click to flip
+                        </span>
                       </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px' }}>
                         <button 
                           className="btn btn-secondary" 
-                          style={{ width: 'auto', padding: '3px 8px', fontSize: '10px' }}
+                          style={{ width: 'auto', padding: '4px 10px', fontSize: '11px' }}
                           disabled={currentFlashcardIndex === 0}
                           onClick={() => {
                             setCurrentFlashcardIndex(prev => prev - 1);
@@ -1244,12 +1335,12 @@ export default function RightPanel({
                         >
                           Prev
                         </button>
-                        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                           {currentFlashcardIndex + 1} of {flashcards.length}
                         </span>
                         <button 
                           className="btn btn-secondary" 
-                          style={{ width: 'auto', padding: '3px 8px', fontSize: '10px' }}
+                          style={{ width: 'auto', padding: '4px 10px', fontSize: '11px' }}
                           disabled={currentFlashcardIndex === flashcards.length - 1}
                           onClick={() => {
                             setCurrentFlashcardIndex(prev => prev + 1);
@@ -1261,7 +1352,12 @@ export default function RightPanel({
                       </div>
                     </div>
                   ) : (
-                    <button className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={fetchFlashcards}>
+                    <button
+                      className="btn btn-primary"
+                      style={{ padding: '8px 16px', fontSize: '12px' }}
+                      onClick={fetchFlashcards}
+                      disabled={loadingFlashcards}
+                    >
                       Generate Cards
                     </button>
                   )}
@@ -1271,11 +1367,9 @@ export default function RightPanel({
               {activeTab === 'mcq' && (
                 <div>
                   {loadingMcqs ? (
-                    <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--text-muted)' }}>
-                      Generating quiz...
-                    </div>
+                    <SkeletonLoader lines={6} label="Generating quiz..." />
                   ) : mcqs.length > 0 ? (
-                    <div>
+                    <div className="ai-fade-in">
                       {mcqs.map((q, qIdx) => {
                         const isChecked = mcqChecked[qIdx];
                         const selectedOptIdx = mcqAnswers[qIdx];
@@ -1283,7 +1377,7 @@ export default function RightPanel({
 
                         return (
                           <div key={qIdx} className="ai-sidebar-mcq-item">
-                            <div style={{ fontWeight: 600, marginBottom: '6px' }}>Q{qIdx + 1}. {q.question}</div>
+                            <div style={{ fontWeight: 600, marginBottom: '6px', lineHeight: 1.4 }}>Q{qIdx + 1}. {q.question}</div>
                             
                             {q.options.map((opt, oIdx) => {
                               let optClass = 'ai-sidebar-mcq-opt';
@@ -1308,14 +1402,14 @@ export default function RightPanel({
                             {!isChecked ? (
                               <button 
                                 className="btn btn-secondary" 
-                                style={{ width: 'auto', padding: '3px 8px', fontSize: '9px', marginTop: '8px' }}
+                                style={{ width: 'auto', padding: '4px 10px', fontSize: '10px', marginTop: '8px' }}
                                 disabled={selectedOptIdx === undefined}
                                 onClick={() => handleCheckMcq(qIdx)}
                               >
-                                Check
+                                Check Answer
                               </button>
                             ) : (
-                              <div style={{ fontSize: '10px', marginTop: '6px', fontWeight: '500' }}>
+                              <div style={{ fontSize: '10.5px', marginTop: '6px', fontWeight: '500' }}>
                                 {selectedOptIdx === correctOptIdx 
                                   ? <span style={{ color: '#4ade80' }}>✓ Correct</span> 
                                   : <span style={{ color: '#f87171' }}>✗ Incorrect (Ans: {q.correct_answer})</span>}
@@ -1326,7 +1420,12 @@ export default function RightPanel({
                       })}
                     </div>
                   ) : (
-                    <button className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={fetchMcqs}>
+                    <button
+                      className="btn btn-primary"
+                      style={{ padding: '8px 16px', fontSize: '12px' }}
+                      onClick={fetchMcqs}
+                      disabled={loadingMcqs}
+                    >
                       Generate Quiz
                     </button>
                   )}
@@ -1575,17 +1674,14 @@ export default function RightPanel({
                     {activeTab === 'summary' && (
                       <div className="ai-workspace-summary" style={{ overflowY: 'auto', paddingRight: '10px' }}>
                         {loadingSummary ? (
-                          <div className="ai-workspace-loading" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                            <svg className="ai-spinner" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginBottom: '12px', color: 'var(--text-muted)' }}>
-                              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                            </svg>
-                            <span>Analyzing document & creating notes...</span>
+                          <div style={{ padding: '24px' }}>
+                            <SkeletonLoader lines={8} label="Analyzing document & generating summary..." />
                           </div>
                         ) : summaryData ? (
-                          <div>
+                          <div className="ai-fade-in">
                             <div className="ai-summary-card" style={{ padding: '24px', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
                               <h4 className="ai-summary-card__title" style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '12px' }}>Executive Summary</h4>
-                              <p className="ai-summary-card__text" style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>{summaryData.executive_summary}</p>
+                              <p className="ai-summary-card__text" style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>{summaryData.executive_summary}</p>
                             </div>
                             
                             <h4 className="ai-summary-card__title" style={{ marginTop: '28px', fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Key Concepts</h4>
@@ -1593,7 +1689,7 @@ export default function RightPanel({
                               {summaryData.key_concepts?.map((c, i) => (
                                 <div key={i} className="ai-concept-card" style={{ padding: '18px', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
                                   <h5 className="ai-concept-card__name" style={{ fontSize: '13.5px', marginBottom: '6px', color: '#FFF', fontWeight: '600' }}>{c.concept}</h5>
-                                  <p className="ai-concept-card__desc" style={{ fontSize: '12px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>{c.description}</p>
+                                  <p className="ai-concept-card__desc" style={{ fontSize: '12.5px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>{c.description}</p>
                                 </div>
                               ))}
                             </div>
@@ -1601,13 +1697,13 @@ export default function RightPanel({
                             <h4 className="ai-summary-card__title" style={{ marginTop: '28px', fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Key Takeaways</h4>
                             <ul className="ai-points-list" style={{ marginTop: '12px', color: 'var(--text-secondary)', paddingLeft: '20px' }}>
                               {summaryData.key_points?.map((p, i) => (
-                                <li key={i} style={{ fontSize: '13.5px', marginBottom: '8px', lineHeight: 1.5 }}>{p}</li>
+                                <li key={i} style={{ fontSize: '13.5px', marginBottom: '8px', lineHeight: 1.55 }}>{p}</li>
                               ))}
                             </ul>
                           </div>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={() => fetchSummary()}>
+                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={() => fetchSummary()} disabled={loadingSummary}>
                               Generate Summary
                             </button>
                           </div>
@@ -1664,14 +1760,11 @@ export default function RightPanel({
                     {activeTab === 'flashcards' && (
                       <div className="ai-workspace-flashcards" style={{ justifyContent: 'center', height: '100%' }}>
                         {loadingFlashcards ? (
-                          <div className="ai-workspace-loading" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                            <svg className="ai-spinner" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginBottom: '12px', color: 'var(--text-muted)' }}>
-                              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                            </svg>
-                            <span>Generating interactive study cards...</span>
+                          <div style={{ width: '400px' }}>
+                            <SkeletonLoader lines={5} label="Generating interactive study cards..." />
                           </div>
                         ) : flashcards.length > 0 ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }} className="ai-fade-in">
                             <div className="ai-flashcard-container" style={{ height: '320px', width: '540px' }}>
                               <div 
                                 className={`ai-flashcard ${flashcardFlipped ? 'ai-flashcard--flipped' : ''}`}
@@ -1720,7 +1813,7 @@ export default function RightPanel({
                           </div>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={fetchFlashcards}>
+                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={fetchFlashcards} disabled={loadingFlashcards}>
                               Generate Flashcards
                             </button>
                           </div>
@@ -1731,14 +1824,11 @@ export default function RightPanel({
                     {activeTab === 'mcq' && (
                       <div className="ai-workspace-mcqs" style={{ overflowY: 'auto', height: '100%', paddingRight: '12px' }}>
                         {loadingMcqs ? (
-                          <div className="ai-workspace-loading" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                            <svg className="ai-spinner" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginBottom: '12px', color: 'var(--text-muted)' }}>
-                              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                            </svg>
-                            <span>Generating mock quiz questions...</span>
+                          <div style={{ padding: '24px' }}>
+                            <SkeletonLoader lines={8} label="Generating quiz questions..." />
                           </div>
                         ) : mcqs.length > 0 ? (
-                          <div>
+                          <div className="ai-fade-in">
                             {/* Quiz Progress Indicator */}
                             <div className="ai-workspace-mcq-progress">
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px', fontWeight: '500' }}>
@@ -1809,7 +1899,7 @@ export default function RightPanel({
                           </div>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={fetchMcqs}>
+                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={fetchMcqs} disabled={loadingMcqs}>
                               Generate MCQ Quiz
                             </button>
                           </div>
