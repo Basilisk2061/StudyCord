@@ -1,4 +1,6 @@
 import os
+import time
+import hashlib
 # pyrefly: ignore [missing-import]
 import httpx
 # pyrefly: ignore [missing-import]
@@ -20,21 +22,42 @@ import io
 from fastapi import UploadFile, File
 from pydantic import BaseModel
 
-# LangChain and Gemini imports
+# LangChain and Gemini imports (embeddings only)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
+
+# OpenRouter LLM import
+from langchain_openai import ChatOpenAI
 
 # Map GEMINI_API_KEY to GOOGLE_API_KEY for langchain-google-genai compatibility
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY and not os.getenv("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 
+# Load OpenRouter configuration
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
+
+# =====================================================================
+# STARTUP LOGGING — safe, never prints secrets
+# =====================================================================
+print("=" * 60)
+print("[BACKEND] StudyCord RAG Backend starting up...")
 if os.getenv("GOOGLE_API_KEY"):
-    print("[BACKEND] GEMINI_API_KEY/GOOGLE_API_KEY loaded successfully.")
+    print("[BACKEND] [OK] GEMINI_API_KEY/GOOGLE_API_KEY loaded (used for embeddings).")
 else:
-    print("[BACKEND] WARNING: GEMINI_API_KEY is not configured.")
+    print("[BACKEND] [!!] WARNING: GEMINI_API_KEY is not configured -- embeddings will fail.")
+
+if OPENROUTER_API_KEY:
+    masked = f"{OPENROUTER_API_KEY[:8]}...{OPENROUTER_API_KEY[-4:]}"
+    print(f"[BACKEND] [OK] OPENROUTER_API_KEY loaded ({masked}).")
+else:
+    print("[BACKEND] [!!] WARNING: OPENROUTER_API_KEY is not configured -- generation will fail.")
+
+print(f"[BACKEND] OpenRouter model: {OPENROUTER_MODEL}")
+print("=" * 60)
 
 METERED_DOMAIN = os.getenv("METERED_DOMAIN", "studycord.metered.live")
 METERED_SECRET_KEY = os.getenv("METERED_SECRET_KEY")
@@ -54,6 +77,99 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =====================================================================
+# OPENROUTER HELPER
+# =====================================================================
+
+def get_rag_chat_model(temperature: float = 0.3) -> ChatOpenAI:
+    """
+    Returns a ChatOpenAI instance routed through OpenRouter.
+    Temperature can be tuned per-task (lower for structured, higher for chat).
+    """
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENROUTER_API_KEY is not configured on the backend. Please add it to Backend/.env"
+        )
+
+    return ChatOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+        model=OPENROUTER_MODEL,
+        temperature=temperature,
+        request_timeout=120,
+        default_headers={
+            "HTTP-Referer": "http://localhost:5173",
+            "X-Title": "StudyCord",
+        },
+    )
+
+
+def _handle_openrouter_error(e: Exception, endpoint: str) -> HTTPException:
+    """
+    Translates OpenRouter / upstream errors into friendly frontend messages.
+    Returns an HTTPException ready to be raised.
+    """
+    error_str = str(e).lower()
+    detail_raw = str(e)
+
+    # Try to extract status code from the error
+    status_code = 500
+
+    if "401" in error_str or "invalid api key" in error_str or "unauthorized" in error_str:
+        status_code = 401
+        detail = "OpenRouter API key is invalid or expired. Please check your OPENROUTER_API_KEY in Backend/.env."
+    elif "402" in error_str or "insufficient" in error_str or "payment" in error_str or "credits" in error_str:
+        status_code = 402
+        detail = "OpenRouter account has insufficient credits. Please add credits or switch to a free model."
+    elif "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
+        status_code = 429
+        detail = "Rate limit reached on the AI model. Please wait a moment and try again."
+    elif "timeout" in error_str or "timed out" in error_str:
+        status_code = 504
+        detail = "The AI model took too long to respond. Please try again."
+    elif "model" in error_str and ("not found" in error_str or "unavailable" in error_str or "not available" in error_str):
+        status_code = 503
+        detail = f"The selected AI model ({OPENROUTER_MODEL}) is currently unavailable. Please try again later or change the model in Backend/.env."
+    elif "content" in error_str and ("filter" in error_str or "safety" in error_str or "moderation" in error_str):
+        status_code = 422
+        detail = "The AI model refused to generate a response for this content. Please try rephrasing your request."
+    else:
+        detail = f"AI generation failed. Please try again. (Error: {detail_raw[:200]})"
+
+    print(f"[{endpoint}] OpenRouter error — status={status_code}, detail={detail}")
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+# =====================================================================
+# CACHING
+# =====================================================================
+
+# In-memory caches: keyed by (doc_id, cache_type[, question_hash])
+_generation_cache: dict[str, dict] = {}
+
+
+def _cache_key(doc_id: str, cache_type: str, extra: str = "") -> str:
+    """Generate a deterministic cache key."""
+    raw = f"{doc_id}:{cache_type}:{extra}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _get_cached(doc_id: str, cache_type: str, extra: str = ""):
+    key = _cache_key(doc_id, cache_type, extra)
+    return _generation_cache.get(key)
+
+
+def _set_cached(doc_id: str, cache_type: str, value, extra: str = ""):
+    key = _cache_key(doc_id, cache_type, extra)
+    _generation_cache[key] = value
+
+
+# =====================================================================
+# TURN CREDENTIALS (unchanged)
+# =====================================================================
 
 @app.get("/api/turn-credentials")
 async def get_turn_credentials():
@@ -209,7 +325,7 @@ async def rag_upload(file: UploadFile = File(...)):
         # Convert to Documents
         documents = [Document(page_content=chunk, metadata={"source": file.filename}) for chunk in chunks]
         
-        # Embeddings and FAISS
+        # Embeddings and FAISS — still using Gemini embeddings
         embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
         db = FAISS.from_documents(documents, embeddings)
         
@@ -232,24 +348,30 @@ async def rag_upload(file: UploadFile = File(...)):
         print(f"[RAG-UPLOAD] Error processing document: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
+
 @app.post("/api/rag/chat")
 async def rag_chat(request: ChatRequest):
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise HTTPException(
-            status_code=400,
-            detail="GEMINI_API_KEY is not configured on the backend. Please add it to Backend/.env"
-        )
-        
+    endpoint = "RAG-CHAT"
+    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, question='{request.question[:80]}...'")
+    start_time = time.time()
+
     doc_data = vector_stores.get(request.doc_id)
     if not doc_data:
         raise HTTPException(status_code=404, detail="Document not found or expired. Please upload it again.")
-        
+
+    # Check cache for repeated chat questions
+    cached = _get_cached(request.doc_id, "chat", request.question)
+    if cached is not None:
+        elapsed = time.time() - start_time
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
+        return cached
+
     try:
         db = doc_data["db"]
         docs = db.similarity_search(request.question, k=4)
         context = "\n\n".join([doc.page_content for doc in docs])
         
-        chat = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+        chat = get_rag_chat_model(temperature=0.3)
         prompt = (
             f"You are an AI Study Assistant for StudyCord. Answer the student's question based strictly on the provided document context. "
             f"If the answer cannot be found in the context, you may use your general knowledge to answer, but state clearly that it is not explicitly mentioned in the document.\n\n"
@@ -259,26 +381,41 @@ async def rag_chat(request: ChatRequest):
         )
         
         response = await chat.ainvoke(prompt)
-        return {"answer": response.content}
+        result = {"answer": response.content}
+
+        # Cache the result
+        _set_cached(request.doc_id, "chat", result, request.question)
+
+        elapsed = time.time() - start_time
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[RAG-CHAT] Error querying: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to process chat question: {str(e)}")
+        print(f"[{endpoint}] Error: {str(e)}")
+        raise _handle_openrouter_error(e, endpoint)
+
 
 @app.post("/api/rag/summary")
 async def rag_summary(request: DocRequest):
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise HTTPException(
-            status_code=400,
-            detail="GEMINI_API_KEY is not configured on the backend. Please add it to Backend/.env"
-        )
-        
+    endpoint = "RAG-SUMMARY"
+    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
+    start_time = time.time()
+
     doc_data = vector_stores.get(request.doc_id)
     if not doc_data:
         raise HTTPException(status_code=404, detail="Document not found.")
-        
+
+    # Check cache
+    cached = _get_cached(request.doc_id, "summary")
+    if cached is not None:
+        elapsed = time.time() - start_time
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
+        return cached
+
     try:
-        text = doc_data["text"][:50000] # truncate to stay within safe prompt length
-        chat = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
+        text = doc_data["text"][:50000]  # truncate to stay within safe prompt length
+        chat = get_rag_chat_model(temperature=0.2)
         
         prompt = (
             "Analyze the provided document text and generate a structured summary. "
@@ -299,26 +436,43 @@ async def rag_summary(request: DocRequest):
         
         response = await chat.ainvoke(prompt)
         parsed_json = parse_json_from_response(response.content)
+
+        # Cache the result
+        _set_cached(request.doc_id, "summary", parsed_json)
+
+        elapsed = time.time() - start_time
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
         return parsed_json
+    except HTTPException:
+        raise
+    except ValueError as e:
+        print(f"[{endpoint}] JSON parsing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="The AI model returned a response that could not be parsed. Please try again.")
     except Exception as e:
-        print(f"[RAG-SUMMARY] Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(e)}")
+        print(f"[{endpoint}] Error: {str(e)}")
+        raise _handle_openrouter_error(e, endpoint)
+
 
 @app.post("/api/rag/flashcards")
 async def rag_flashcards(request: DocRequest):
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise HTTPException(
-            status_code=400,
-            detail="GEMINI_API_KEY is not configured on the backend. Please add it to Backend/.env"
-        )
-        
+    endpoint = "RAG-FLASHCARDS"
+    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
+    start_time = time.time()
+
     doc_data = vector_stores.get(request.doc_id)
     if not doc_data:
         raise HTTPException(status_code=404, detail="Document not found.")
-        
+
+    # Check cache
+    cached = _get_cached(request.doc_id, "flashcards")
+    if cached is not None:
+        elapsed = time.time() - start_time
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
+        return cached
+
     try:
         text = doc_data["text"][:50000]
-        chat = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+        chat = get_rag_chat_model(temperature=0.3)
         
         prompt = (
             "Analyze the provided document text and generate a list of 5 to 8 high-quality revision flashcards. "
@@ -332,26 +486,44 @@ async def rag_flashcards(request: DocRequest):
         
         response = await chat.ainvoke(prompt)
         parsed_json = parse_json_from_response(response.content)
-        return {"flashcards": parsed_json}
+        result = {"flashcards": parsed_json}
+
+        # Cache the result
+        _set_cached(request.doc_id, "flashcards", result)
+
+        elapsed = time.time() - start_time
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
+        return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        print(f"[{endpoint}] JSON parsing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="The AI model returned a response that could not be parsed. Please try again.")
     except Exception as e:
-        print(f"[RAG-FLASHCARDS] Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate flashcards: {str(e)}")
+        print(f"[{endpoint}] Error: {str(e)}")
+        raise _handle_openrouter_error(e, endpoint)
+
 
 @app.post("/api/rag/mcq")
 async def rag_mcq(request: DocRequest):
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise HTTPException(
-            status_code=400,
-            detail="GEMINI_API_KEY is not configured on the backend. Please add it to Backend/.env"
-        )
-        
+    endpoint = "RAG-MCQ"
+    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
+    start_time = time.time()
+
     doc_data = vector_stores.get(request.doc_id)
     if not doc_data:
         raise HTTPException(status_code=404, detail="Document not found.")
-        
+
+    # Check cache
+    cached = _get_cached(request.doc_id, "mcq")
+    if cached is not None:
+        elapsed = time.time() - start_time
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
+        return cached
+
     try:
         text = doc_data["text"][:50000]
-        chat = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+        chat = get_rag_chat_model(temperature=0.3)
         
         prompt = (
             "Analyze the provided document text and generate 5 multiple-choice questions (MCQs) for revision. "
@@ -370,10 +542,22 @@ async def rag_mcq(request: DocRequest):
         
         response = await chat.ainvoke(prompt)
         parsed_json = parse_json_from_response(response.content)
-        return {"mcqs": parsed_json}
+        result = {"mcqs": parsed_json}
+
+        # Cache the result
+        _set_cached(request.doc_id, "mcq", result)
+
+        elapsed = time.time() - start_time
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
+        return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        print(f"[{endpoint}] JSON parsing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="The AI model returned a response that could not be parsed. Please try again.")
     except Exception as e:
-        print(f"[RAG-MCQ] Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate MCQs: {str(e)}")
+        print(f"[{endpoint}] Error: {str(e)}")
+        raise _handle_openrouter_error(e, endpoint)
 
 if __name__ == "__main__":
     # pyrefly: ignore [missing-import]
