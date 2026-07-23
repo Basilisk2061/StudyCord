@@ -392,6 +392,32 @@ body {
   color: var(--text-primary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   letter-spacing: -0.01em;
+  flex: 1;
+}
+.channel-settings-btn,
+.settings-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+.channel-settings-btn:hover,
+.settings-mini-btn:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+.settings-mini-btn {
+  width: 24px;
+  height: 24px;
 }
 .channel-sidebar__empty {
   flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -1238,6 +1264,275 @@ body {
 }
 .spinner-icon {
   animation: spin 1.2s linear infinite;
+}
+
+/* ===================== SERVER SETTINGS ===================== */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  background-color: rgba(0, 0, 0, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.settings-modal {
+  width: min(920px, 96vw);
+  height: min(720px, 92vh);
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.settings-nav {
+  background-color: var(--bg-panel1);
+  border-right: 1px solid var(--border);
+  padding: 18px 12px;
+}
+.settings-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 6px 16px;
+}
+.settings-tab {
+  width: 100%;
+  display: flex;
+  padding: 9px 10px;
+  margin-bottom: 3px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.settings-tab:hover:not(:disabled),
+.settings-tab--active {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.settings-tab:disabled {
+  color: var(--text-dark);
+  cursor: not-allowed;
+}
+.settings-content {
+  min-width: 0;
+  padding: 20px;
+  overflow-y: auto;
+}
+.settings-content__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.settings-content__header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.settings-icon-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.settings-icon-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+.settings-row,
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.settings-btn {
+  width: auto;
+  padding: 8px 14px;
+}
+.settings-btn--danger,
+.settings-link-btn--danger {
+  color: var(--error-color);
+  border-color: rgba(239, 68, 68, 0.28);
+}
+.settings-error {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  border-radius: var(--radius-sm);
+  background-color: rgba(239, 68, 68, 0.07);
+  color: var(--error-color);
+  font-size: 12px;
+}
+.settings-muted {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin: 0;
+}
+.settings-member,
+.settings-ban {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.settings-member {
+  grid-template-areas:
+    "avatar body role actions"
+    ". reason reason reason";
+}
+.settings-ban {
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+}
+.settings-avatar {
+  grid-area: avatar;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+.settings-avatar--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #2f2f2f;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+.settings-member__body {
+  grid-area: body;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-member__name {
+  color: var(--text-primary);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-role {
+  grid-area: role;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 2px 6px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.settings-actions {
+  grid-area: actions;
+  justify-content: flex-end;
+}
+.settings-link-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 5px 8px;
+}
+.settings-link-btn:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+.settings-link-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.settings-reason {
+  grid-area: reason;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+.settings-danger-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  background-color: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-danger-box h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 400;
+  max-width: 320px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .settings-modal {
+    grid-template-columns: 1fr;
+    height: 94vh;
+  }
+  .settings-nav {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 12px;
+  }
+  .settings-title {
+    display: none;
+  }
+  .settings-tab {
+    width: auto;
+    flex-shrink: 0;
+    margin: 0;
+  }
+  .settings-member {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "avatar body role"
+      ". actions actions"
+      ". reason reason";
+  }
 }
 
 /* ===================== ETHEREAL BACKGROUND ===================== */

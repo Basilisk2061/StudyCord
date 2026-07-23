@@ -19,7 +19,10 @@ import uuid
 import json
 import re
 import io
-from fastapi import UploadFile, File
+import secrets
+import string
+from datetime import datetime, timezone
+from fastapi import UploadFile, File, Header, Depends
 from pydantic import BaseModel
 
 # LangChain and Gemini imports (embeddings only)
@@ -61,6 +64,9 @@ print("=" * 60)
 
 METERED_DOMAIN = os.getenv("METERED_DOMAIN", "studycord.metered.live")
 METERED_SECRET_KEY = os.getenv("METERED_SECRET_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 app = FastAPI(title="StudyCord Secure TURN API")
 
@@ -141,6 +147,532 @@ def _handle_openrouter_error(e: Exception, endpoint: str) -> HTTPException:
 
     print(f"[{endpoint}] OpenRouter error — status={status_code}, detail={detail}")
     return HTTPException(status_code=status_code, detail=detail)
+
+
+# =====================================================================
+# SERVER ADMINISTRATION HELPERS
+# =====================================================================
+
+PERMISSIONS = {
+    "owner": {
+        "view_server",
+        "manage_server",
+        "manage_channels",
+        "manage_members",
+        "manage_roles",
+        "kick_members",
+        "ban_members",
+        "create_invites",
+        "manage_invites",
+        "transfer_ownership",
+        "delete_server",
+    },
+    "admin": {
+        "view_server",
+        "manage_server",
+        "manage_channels",
+        "manage_members",
+        "kick_members",
+        "ban_members",
+        "create_invites",
+        "manage_invites",
+    },
+    "member": {"view_server"},
+}
+
+VALID_ROLES = {"owner", "admin", "member"}
+ROLE_RANK = {"member": 1, "admin": 2, "owner": 3}
+DEFAULT_CHANNELS = ("general", "assignments", "resources")
+
+
+class RoleUpdateRequest(BaseModel):
+    role: str
+
+
+class TransferOwnershipRequest(BaseModel):
+    new_owner_id: str
+
+
+class ReasonRequest(BaseModel):
+    reason: str | None = None
+
+
+class ServerUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class CreateServerRequest(BaseModel):
+    name: str
+
+
+class JoinServerRequest(BaseModel):
+    invite_code: str
+
+
+class CreateChannelRequest(BaseModel):
+    name: str
+    type: str = "text"
+
+
+def _supabase_configured() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_ANON_KEY)
+
+
+class SupabaseRestClient:
+    """Small PostgREST client with one fixed security context."""
+
+    def __init__(self, name: str, api_key: str, bearer_token: str):
+        self.name = name
+        self.api_key = api_key
+        self.bearer_token = bearer_token
+
+    def _headers(self, prefer: str | None = None) -> dict[str, str]:
+        headers = {
+            "apikey": self.api_key,
+            "Authorization": f"Bearer {self.bearer_token}",
+            "Content-Type": "application/json",
+        }
+        if prefer:
+            headers["Prefer"] = prefer
+        return headers
+
+    async def rest(self, method: str, path: str, *, params: dict | None = None, json_body=None, prefer: str | None = None):
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/{path}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.request(
+                method,
+                url,
+                params=params,
+                json=json_body,
+                headers=self._headers(prefer),
+            )
+        if response.status_code >= 400:
+            print(f"[SUPABASE:{self.name}] {method} {path} failed: {response.status_code} {response.text[:400]}")
+            status_code = response.status_code if response.status_code in {400, 401, 403, 404, 409} else 500
+            raise HTTPException(status_code=status_code, detail="Database operation was rejected.")
+        return response.json() if response.text else None
+
+    async def rpc(self, function_name: str, payload: dict):
+        url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/rpc/{function_name}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(url, json=payload, headers=self._headers())
+        if response.status_code >= 400:
+            print(f"[SUPABASE-RPC:{self.name}] {function_name} failed: {response.status_code} {response.text[:400]}")
+            if "must be server owner" in response.text:
+                raise HTTPException(status_code=403, detail="Only the server owner can transfer ownership.")
+            if "new owner must be a current server member" in response.text:
+                raise HTTPException(status_code=400, detail="New owner must be a current server member.")
+            raise HTTPException(status_code=500, detail="Database function failed. Ensure the Phase 14 migration has been run.")
+        return response.json() if response.text else None
+
+
+def supabase_user(access_token: str) -> SupabaseRestClient:
+    if not _supabase_configured():
+        raise HTTPException(
+            status_code=500,
+            detail="Add SUPABASE_URL and SUPABASE_ANON_KEY to Backend/.env.",
+        )
+    return SupabaseRestClient("user", SUPABASE_ANON_KEY, access_token)
+
+
+def supabase_admin() -> SupabaseRestClient:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="This operation requires SUPABASE_SERVICE_ROLE_KEY in Backend/.env.",
+        )
+    return SupabaseRestClient("admin", SUPABASE_SERVICE_ROLE_KEY, SUPABASE_SERVICE_ROLE_KEY)
+
+
+async def get_current_user(authorization: str | None = Header(default=None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing authentication token.")
+    token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing authentication token.")
+
+    if not _supabase_configured():
+        raise HTTPException(status_code=500, detail="Supabase auth credentials are not configured on the backend.")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{SUPABASE_URL.rstrip('/')}/auth/v1/user",
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}"},
+        )
+    if response.status_code >= 400:
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication token.")
+    user_data = response.json()
+    user_id = user_data.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid authentication token.")
+    return {"id": user_id, "email": user_data.get("email"), "supabase_user": supabase_user(token)}
+
+
+def _audit(action: str, server_id: str, actor_id: str, target_id: str | None = None, old_role: str | None = None, new_role: str | None = None, success: bool = True):
+    print(json.dumps({
+        "action": action,
+        "server_id": server_id,
+        "actor_user_id": actor_id,
+        "target_user_id": target_id,
+        "old_role": old_role,
+        "new_role": new_role,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "success": success,
+    }))
+
+
+def generate_invite_code(length: int = 6) -> str:
+    chars = string.ascii_uppercase + string.digits
+    return "".join(secrets.choice(chars) for _ in range(length))
+
+
+def normalize_channel_name(name: str) -> str:
+    clean = re.sub(r"[^a-zA-Z0-9\s_-]", "", name.strip().lower())
+    clean = re.sub(r"\s+", "-", clean)
+    clean = re.sub(r"-+", "-", clean).strip("-_")
+    if not clean:
+        raise HTTPException(status_code=400, detail="Channel name is required.")
+    return clean[:80]
+
+
+async def get_server(client: SupabaseRestClient, server_id: str):
+    rows = await client.rest("GET", "servers", params={"id": f"eq.{server_id}", "select": "*"})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Server not found.")
+    return rows[0]
+
+
+async def get_server_member(client: SupabaseRestClient, server_id: str, user_id: str):
+    rows = await client.rest(
+        "GET",
+        "server_members",
+        params={"server_id": f"eq.{server_id}", "user_id": f"eq.{user_id}", "select": "*"},
+    )
+    return rows[0] if rows else None
+
+
+async def get_server_member_role(client: SupabaseRestClient, server_id: str, user_id: str) -> str | None:
+    member = await get_server_member(client, server_id, user_id)
+    return member.get("role") if member else None
+
+
+async def require_server_permission(client: SupabaseRestClient, server_id: str, user_id: str, permission: str) -> str:
+    role = await get_server_member_role(client, server_id, user_id)
+    if not role or permission not in PERMISSIONS.get(role, set()):
+        raise HTTPException(status_code=403, detail="You do not have permission to perform this action.")
+    return role
+
+
+def can_manage_target_member(actor_role: str, target_role: str, action: str) -> bool:
+    if target_role == "owner":
+        return False
+    if action in {"kick", "ban"}:
+        return ROLE_RANK[actor_role] > ROLE_RANK[target_role]
+    return actor_role == "owner"
+
+
+def validate_role_change(actor_id: str, target_id: str, actor_role: str, target_role: str, new_role: str):
+    if new_role not in {"admin", "member"}:
+        raise HTTPException(status_code=400, detail="Role must be admin or member.")
+    if actor_id == target_id:
+        raise HTTPException(status_code=400, detail="You cannot change your own role.")
+    if actor_role != "owner":
+        raise HTTPException(status_code=403, detail="Only the server owner can change member roles.")
+    if target_role == "owner":
+        raise HTTPException(status_code=400, detail="The server owner role cannot be changed here.")
+    if target_role == new_role:
+        raise HTTPException(status_code=400, detail=f"Member is already {new_role}.")
+
+
+async def cleanup_voice_presence(client: SupabaseRestClient, server_id: str, user_id: str):
+    await client.rest(
+        "DELETE",
+        "voice_participants",
+        params={"server_id": f"eq.{server_id}", "user_id": f"eq.{user_id}"},
+    )
+
+
+async def ensure_profile(client: SupabaseRestClient, user: dict):
+    existing = await client.rest("GET", "profiles", params={"id": f"eq.{user['id']}", "select": "id"})
+    if existing:
+        return
+    email = user.get("email") or ""
+    username = email.split("@")[0] if email else f"user-{user['id'][:8]}"
+    await client.rest(
+        "POST",
+        "profiles",
+        json_body={"id": user["id"], "email": email, "username": username},
+        prefer="return=minimal",
+    )
+
+
+@app.post("/api/servers")
+async def create_server(request: CreateServerRequest, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Server name is required.")
+    await ensure_profile(client, user)
+    invite_code = generate_invite_code()
+    server_id = str(uuid.uuid4())
+    await client.rest(
+        "POST",
+        "servers",
+        json_body={"id": server_id, "name": name[:80], "owner_id": user["id"], "invite_code": invite_code},
+        prefer="return=minimal",
+    )
+    await client.rest(
+        "POST",
+        "server_members",
+        json_body={"server_id": server_id, "user_id": user["id"], "role": "owner"},
+        prefer="return=minimal",
+    )
+    channels = [{"server_id": server_id, "name": ch, "type": "text"} for ch in DEFAULT_CHANNELS]
+    await client.rest("POST", "channels", json_body=channels, prefer="return=minimal")
+    new_server = await get_server(client, server_id)
+    _audit("create_server", server_id, user["id"], success=True)
+    return {"success": True, "server": new_server}
+
+
+@app.post("/api/servers/join")
+async def join_server(request: JoinServerRequest, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    admin = supabase_admin()
+    clean_code = request.invite_code.strip().upper()
+    server_rows = await admin.rest("GET", "servers", params={"invite_code": f"eq.{clean_code}", "select": "*"})
+    if not server_rows:
+        raise HTTPException(status_code=404, detail="Invalid invite code. Server not found.")
+    server = server_rows[0]
+
+    bans = await admin.rest(
+        "GET",
+        "server_bans",
+        params={"server_id": f"eq.{server['id']}", "user_id": f"eq.{user['id']}", "select": "id"},
+    )
+    if bans:
+        raise HTTPException(status_code=403, detail="You are banned from this server.")
+
+    existing = await get_server_member(client, server["id"], user["id"])
+    if existing:
+        return {"success": True, "server": server, "message": "You are already a member of this server!"}
+
+    await ensure_profile(client, user)
+    await client.rest(
+        "POST",
+        "server_members",
+        json_body={"server_id": server["id"], "user_id": user["id"], "role": "member"},
+        prefer="return=minimal",
+    )
+    _audit("join_server", server["id"], user["id"], success=True)
+    return {"success": True, "server": server}
+
+
+@app.post("/api/servers/{server_id}/channels")
+async def create_channel(server_id: str, request: CreateChannelRequest, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    await require_server_permission(client, server_id, user["id"], "manage_channels")
+    channel_type = request.type.strip().lower()
+    if channel_type not in {"text", "voice"}:
+        raise HTTPException(status_code=400, detail="Channel type must be text or voice.")
+    channel = (await client.rest(
+        "POST",
+        "channels",
+        json_body={"server_id": server_id, "name": normalize_channel_name(request.name), "type": channel_type},
+        prefer="return=representation",
+    ))[0]
+    _audit("create_channel", server_id, user["id"], success=True)
+    return {"success": True, "channel": channel}
+
+
+@app.patch("/api/servers/{server_id}/members/{target_user_id}/role")
+async def update_member_role(server_id: str, target_user_id: str, request: RoleUpdateRequest, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    actor_role = await require_server_permission(client, server_id, user["id"], "manage_roles")
+    target = await get_server_member(client, server_id, target_user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Target user is not a server member.")
+    old_role = target["role"]
+    validate_role_change(user["id"], target_user_id, actor_role, old_role, request.role)
+    updated = (await client.rest(
+        "PATCH",
+        "server_members",
+        params={"server_id": f"eq.{server_id}", "user_id": f"eq.{target_user_id}"},
+        json_body={"role": request.role},
+        prefer="return=representation",
+    ))[0]
+    _audit("update_member_role", server_id, user["id"], target_user_id, old_role, request.role, True)
+    return {"success": True, "member": updated}
+
+
+@app.post("/api/servers/{server_id}/transfer-ownership")
+async def transfer_ownership(server_id: str, request: TransferOwnershipRequest, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    actor_role = await require_server_permission(client, server_id, user["id"], "transfer_ownership")
+    if actor_role != "owner":
+        raise HTTPException(status_code=403, detail="Only the server owner can transfer ownership.")
+    if request.new_owner_id == user["id"]:
+        raise HTTPException(status_code=400, detail="You already own this server.")
+    target = await get_server_member(client, server_id, request.new_owner_id)
+    if not target:
+        raise HTTPException(status_code=400, detail="New owner must be a current server member.")
+    await supabase_admin().rpc("transfer_server_ownership", {
+        "p_server_id": server_id,
+        "p_current_owner_id": user["id"],
+        "p_new_owner_id": request.new_owner_id,
+    })
+    _audit("transfer_ownership", server_id, user["id"], request.new_owner_id, "owner", "owner", True)
+    return {"success": True, "message": "Ownership transferred."}
+
+
+@app.post("/api/servers/{server_id}/members/{target_user_id}/kick")
+async def kick_member(server_id: str, target_user_id: str, request: ReasonRequest | None = None, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    actor_role = await require_server_permission(client, server_id, user["id"], "kick_members")
+    if target_user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot kick yourself.")
+    target = await get_server_member(client, server_id, target_user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Target user is not a server member.")
+    if not can_manage_target_member(actor_role, target["role"], "kick"):
+        raise HTTPException(status_code=403, detail="You cannot kick this member.")
+    await cleanup_voice_presence(supabase_admin(), server_id, target_user_id)
+    await client.rest(
+        "DELETE",
+        "server_members",
+        params={"server_id": f"eq.{server_id}", "user_id": f"eq.{target_user_id}"},
+    )
+    _audit("kick_member", server_id, user["id"], target_user_id, target["role"], None, True)
+    return {"success": True, "message": "Member kicked."}
+
+
+@app.post("/api/servers/{server_id}/members/{target_user_id}/ban")
+async def ban_member(server_id: str, target_user_id: str, request: ReasonRequest | None = None, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    actor_role = await require_server_permission(client, server_id, user["id"], "ban_members")
+    if target_user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot ban yourself.")
+    target = await get_server_member(client, server_id, target_user_id)
+    if target and not can_manage_target_member(actor_role, target["role"], "ban"):
+        raise HTTPException(status_code=403, detail="You cannot ban this member.")
+    server = await get_server(client, server_id)
+    if target_user_id == server["owner_id"]:
+        raise HTTPException(status_code=403, detail="The server owner cannot be banned.")
+
+    existing_ban = await supabase_admin().rest(
+        "GET",
+        "server_bans",
+        params={"server_id": f"eq.{server_id}", "user_id": f"eq.{target_user_id}", "select": "id"},
+    )
+    if existing_ban:
+        raise HTTPException(status_code=409, detail="This user is already banned from the server.")
+
+    await client.rest(
+        "POST",
+        "server_bans",
+        json_body={
+            "server_id": server_id,
+            "user_id": target_user_id,
+            "banned_by": user["id"],
+            "reason": (request.reason if request else None),
+        },
+        prefer="return=minimal",
+    )
+    await cleanup_voice_presence(supabase_admin(), server_id, target_user_id)
+    await client.rest(
+        "DELETE",
+        "server_members",
+        params={"server_id": f"eq.{server_id}", "user_id": f"eq.{target_user_id}"},
+    )
+    _audit("ban_member", server_id, user["id"], target_user_id, target["role"] if target else None, None, True)
+    return {"success": True, "message": "Member banned."}
+
+
+@app.get("/api/servers/{server_id}/bans")
+async def list_bans(server_id: str, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    actor_role = await require_server_permission(client, server_id, user["id"], "ban_members")
+    if actor_role != "owner":
+        raise HTTPException(status_code=403, detail="Only the server owner can view bans.")
+    bans = await client.rest("GET", "server_bans", params={"server_id": f"eq.{server_id}", "select": "*", "order": "created_at.desc"})
+    user_ids = sorted({b["user_id"] for b in bans} | {b["banned_by"] for b in bans})
+    profiles = {}
+    if user_ids:
+        profile_rows = await client.rest("GET", "profiles", params={"id": f"in.({','.join(user_ids)})", "select": "id,username,full_name,avatar_url,email"})
+        profiles = {p["id"]: p for p in profile_rows}
+    return {
+        "bans": [
+            {
+                **ban,
+                "profile": profiles.get(ban["user_id"]),
+                "banned_by_profile": profiles.get(ban["banned_by"]),
+            }
+            for ban in bans
+        ]
+    }
+
+
+@app.delete("/api/servers/{server_id}/bans/{target_user_id}")
+async def unban_member(server_id: str, target_user_id: str, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    actor_role = await require_server_permission(client, server_id, user["id"], "ban_members")
+    if actor_role != "owner":
+        raise HTTPException(status_code=403, detail="Only the server owner can unban users.")
+    await client.rest("DELETE", "server_bans", params={"server_id": f"eq.{server_id}", "user_id": f"eq.{target_user_id}"})
+    _audit("unban_member", server_id, user["id"], target_user_id, None, None, True)
+    return {"success": True, "message": "User unbanned."}
+
+
+@app.patch("/api/servers/{server_id}")
+async def update_server(server_id: str, request: ServerUpdateRequest, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    await require_server_permission(client, server_id, user["id"], "manage_server")
+    payload = {}
+    if request.name is not None:
+        name = request.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Server name is required.")
+        payload["name"] = name[:80]
+    if request.description is not None:
+        payload["description"] = request.description.strip()[:500] if request.description else None
+    if not payload:
+        raise HTTPException(status_code=400, detail="No server settings were provided.")
+    server = (await client.rest(
+        "PATCH",
+        "servers",
+        params={"id": f"eq.{server_id}"},
+        json_body=payload,
+        prefer="return=representation",
+    ))[0]
+    _audit("update_server", server_id, user["id"], success=True)
+    return {"success": True, "server": server}
+
+
+@app.post("/api/servers/{server_id}/regenerate-invite")
+async def regenerate_invite(server_id: str, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    await require_server_permission(client, server_id, user["id"], "manage_invites")
+    invite_code = generate_invite_code()
+    server = (await supabase_admin().rest(
+        "PATCH",
+        "servers",
+        params={"id": f"eq.{server_id}"},
+        json_body={"invite_code": invite_code},
+        prefer="return=representation",
+    ))[0]
+    _audit("regenerate_invite", server_id, user["id"], success=True)
+    return {"success": True, "server": server}
+
+
+@app.delete("/api/servers/{server_id}")
+async def delete_server(server_id: str, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    actor_role = await require_server_permission(client, server_id, user["id"], "delete_server")
+    if actor_role != "owner":
+        raise HTTPException(status_code=403, detail="Only the server owner can delete this server.")
+    await client.rest("DELETE", "servers", params={"id": f"eq.{server_id}"})
+    _audit("delete_server", server_id, user["id"], success=True)
+    return {"success": True, "message": "Server deleted."}
 
 
 # =====================================================================

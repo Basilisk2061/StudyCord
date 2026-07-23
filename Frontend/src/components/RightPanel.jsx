@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import ChatMarkdownMessage from './ChatMarkdownMessage';
 
 const SUGGESTED_PROMPTS = [
   'Explain binary search trees',
@@ -58,7 +59,8 @@ export default function RightPanel({
   members = [],
   membersLoading = false,
   profile,
-  userId,
+  currentRole,
+  onOpenSettings,
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -115,6 +117,7 @@ export default function RightPanel({
   };
 
   const showServerInfo = activeServerId !== null;
+  const canOpenSettings = currentRole === 'owner' || currentRole === 'admin';
 
   // Auto-scroll chat
   useEffect(() => {
@@ -1270,7 +1273,9 @@ export default function RightPanel({
                         key={msg.id} 
                         className={`ai-sidebar-bubble ai-sidebar-bubble--${msg.sender}`}
                       >
-                        {msg.content}
+                        {msg.sender === 'ai'
+                          ? <ChatMarkdownMessage content={msg.content} />
+                          : msg.content}
                       </div>
                     ))}
                     {sendingChat && (
@@ -1441,7 +1446,17 @@ export default function RightPanel({
         <>
           {/* Server Invite Code */}
           <div className="right-panel__section">
-            <h3 className="right-panel__section-title">Invite Code</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <h3 className="right-panel__section-title" style={{ margin: 0 }}>Invite Code</h3>
+              {canOpenSettings && (
+                <button className="settings-mini-btn" onClick={onOpenSettings} title="Server settings" aria-label="Server settings">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.72l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
+              )}
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
               <div
                 style={{
@@ -1553,7 +1568,7 @@ export default function RightPanel({
                     </div>
 
                     <span className="member-item__role">
-                      {m.role === 'owner' ? 'Owner' : 'Member'}
+                      {m.role === 'owner' ? 'Owner' : m.role === 'admin' ? 'Admin' : 'Member'}
                     </span>
                   </div>
                 );
@@ -1721,7 +1736,9 @@ export default function RightPanel({
                               </div>
                               <div style={{ minWidth: 0, flex: 1 }}>
                                 <div className="ai-message__bubble">
-                                  {msg.content}
+                                  {msg.sender === 'ai'
+                                    ? <ChatMarkdownMessage content={msg.content} />
+                                    : msg.content}
                                 </div>
                                 <span className="ai-message__time">{msg.time}</span>
                               </div>

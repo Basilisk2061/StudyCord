@@ -21,6 +21,7 @@ dist-ssr/
 
 # Environment variables
 .env
+Backend/.env
 .env.local
 .env.development.local
 .env.test.local

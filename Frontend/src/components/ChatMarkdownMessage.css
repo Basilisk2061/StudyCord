@@ -1,0 +1,143 @@
+.chat-ai-markdown {
+  min-width: 0;
+  max-width: 100%;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.chat-ai-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-ai-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-ai-markdown p {
+  margin: 0 0 0.75em;
+}
+
+.chat-ai-markdown h1,
+.chat-ai-markdown h2,
+.chat-ai-markdown h3,
+.chat-ai-markdown h4,
+.chat-ai-markdown h5,
+.chat-ai-markdown h6 {
+  margin: 1em 0 0.45em;
+  color: #fff;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+.chat-ai-markdown h1 {
+  font-size: 1.18em;
+}
+
+.chat-ai-markdown h2 {
+  font-size: 1.12em;
+}
+
+.chat-ai-markdown h3,
+.chat-ai-markdown h4,
+.chat-ai-markdown h5,
+.chat-ai-markdown h6 {
+  font-size: 1.05em;
+}
+
+.chat-ai-markdown ul,
+.chat-ai-markdown ol {
+  margin: 0.65em 0 0.85em;
+  padding-left: 1.5em;
+}
+
+.chat-ai-markdown li {
+  margin: 0.35em 0;
+  padding-left: 0.15em;
+}
+
+.chat-ai-markdown li > p {
+  margin: 0.25em 0;
+}
+
+.chat-ai-markdown blockquote {
+  margin: 0.8em 0;
+  padding: 0.2em 0 0.2em 0.8em;
+  border-left: 2px solid #737373;
+  color: #d4d4d4;
+}
+
+.chat-ai-markdown code {
+  padding: 0.12em 0.32em;
+  border: 1px solid #404040;
+  border-radius: 3px;
+  background: #171717;
+  color: #f5f5f5;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9em;
+}
+
+.chat-ai-markdown pre {
+  max-width: 100%;
+  margin: 0.8em 0;
+  padding: 0.85em;
+  overflow-x: auto;
+  border: 1px solid #404040;
+  border-radius: 5px;
+  background: #0a0a0a;
+  line-height: 1.5;
+}
+
+.chat-ai-markdown pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 0.88em;
+  white-space: pre;
+}
+
+.chat-ai-markdown__table-wrap {
+  max-width: 100%;
+  margin: 0.8em 0;
+  overflow-x: auto;
+}
+
+.chat-ai-markdown table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+
+.chat-ai-markdown th,
+.chat-ai-markdown td {
+  padding: 0.5em 0.65em;
+  border: 1px solid #525252;
+  text-align: left;
+  vertical-align: top;
+}
+
+.chat-ai-markdown th {
+  background: #171717;
+  color: #fff;
+  font-weight: 650;
+}
+
+.chat-ai-markdown a {
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.chat-ai-markdown hr {
+  margin: 0.9em 0;
+  border: 0;
+  border-top: 1px solid #525252;
+}
+
+.chat-ai-markdown strong {
+  color: #fff;
+  font-weight: 700;
+}
