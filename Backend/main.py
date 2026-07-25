@@ -42,6 +42,7 @@ METERED_SECRET_KEY = os.getenv("METERED_SECRET_KEY")
 app = FastAPI(title="StudyCord Secure TURN API")
 
 # Enable CORS for the frontend
+# CORS : Cross Origin Resource Sharing
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
