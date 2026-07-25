@@ -4,35 +4,4 @@ __pycache__/
 *$py.class
 venv/
 .venv/
-env/
-bin/
-share/
-pyvenv.cfg
-include/
-
-# Node
-node_modules/
-Frontend/node_modules/
-dist/
-Frontend/dist/
-dist-ssr/
-*.local
-
-# Environment variables
-.env
 Backend/.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-Frontend/.env
-
-# Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
