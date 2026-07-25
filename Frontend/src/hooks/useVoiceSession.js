@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 
+const AUTOPLAY_WARNING = 'Your browser blocked automatic media playback. Click the page, then try again.';
+const PLAYBACK_RETRY_EVENTS = ['pointerdown', 'click', 'keydown'];
+
 export function useVoiceSession(userId) {
   const [joinedChannelId, setJoinedChannelId] = useState(null);
   const [joinedChannelName, setJoinedChannelName] = useState(null);
@@ -14,9 +17,30 @@ export function useVoiceSession(userId) {
   const [callStatus, setCallStatus] = useState('');
   const [connectionStatuses, setConnectionStatuses] = useState({});
   const [turnWarning, setTurnWarning] = useState('');
+  const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [cameraBusy, setCameraBusy] = useState(false);
+  const [cameraError, setCameraError] = useState('');
+  const [autoplayWarning, setAutoplayWarning] = useState('');
+  const [localVideoStream, setLocalVideoStream] = useState(null);
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [remoteCameraStates, setRemoteCameraStates] = useState({});
 
   const localStreamRef = useRef(null);
+  const cameraTrackRef = useRef(null);
+  const cameraEnabledRef = useRef(false);
+  const cameraStateUpdatedAtRef = useRef(0);
   const peerConnectionsRef = useRef({});
+  const videoSendersRef = useRef({});
+  const remoteStreamsRef = useRef({});
+  const remoteCameraStateTimesRef = useRef({});
+  const makingOfferRef = useRef({});
+  const negotiationPendingRef = useRef({});
+  const ignoreOfferRef = useRef({});
+  const settingRemoteAnswerRef = useRef({});
+  const stopCameraRef = useRef(null);
+  const pendingPlaybackElementsRef = useRef(new Set());
+  const playbackRetryListenerRef = useRef(null);
+  const playbackRetryInProgressRef = useRef(false);
   const participantsRef = useRef([]);
   const pendingCandidatesRef = useRef({});
   const reconnectTimeoutsRef = useRef({});
@@ -46,12 +70,114 @@ export function useVoiceSession(userId) {
     isJoinedRef.current = isJoined;
   }, [joinedChannelId, userId, isJoined]);
 
-  // ---------- local audio stream helpers ----------
+  const logVideoDiagnostic = useCallback((event, remoteUserId, details = {}) => {
+    console.debug('[WebRTC][video]', {
+      event,
+      localUserId: currentUserIdRef.current,
+      remoteUserId,
+      ...details,
+    });
+  }, []);
+
+  // ---------- remote media playback helpers ----------
+  const removePlaybackRetryListeners = useCallback(() => {
+    const listener = playbackRetryListenerRef.current;
+    if (!listener) return;
+
+    PLAYBACK_RETRY_EVENTS.forEach((eventName) => {
+      document.removeEventListener(eventName, listener, true);
+    });
+    playbackRetryListenerRef.current = null;
+  }, []);
+
+  const clearPendingMediaPlayback = useCallback(() => {
+    pendingPlaybackElementsRef.current.clear();
+    removePlaybackRetryListeners();
+    setAutoplayWarning('');
+  }, [removePlaybackRetryListeners]);
+
+  const retryPendingMediaPlayback = useCallback(async () => {
+    if (playbackRetryInProgressRef.current) return;
+    playbackRetryInProgressRef.current = true;
+
+    const pendingElements = Array.from(pendingPlaybackElementsRef.current);
+
+    try {
+      await Promise.all(pendingElements.map(async (mediaElement) => {
+        if (!mediaElement.isConnected || !mediaElement.srcObject) {
+          pendingPlaybackElementsRef.current.delete(mediaElement);
+          return;
+        }
+
+        try {
+          await mediaElement.play();
+          pendingPlaybackElementsRef.current.delete(mediaElement);
+        } catch (err) {
+          if (err?.name !== 'NotAllowedError') {
+            pendingPlaybackElementsRef.current.delete(mediaElement);
+            console.error('[WebRTC] Remote media playback retry failed:', err);
+          }
+        }
+      }));
+    } finally {
+      playbackRetryInProgressRef.current = false;
+    }
+
+    if (pendingPlaybackElementsRef.current.size === 0) {
+      removePlaybackRetryListeners();
+      setAutoplayWarning('');
+    }
+  }, [removePlaybackRetryListeners]);
+
+  const playRemoteMedia = useCallback((mediaElement) => {
+    if (!mediaElement) return Promise.resolve();
+
+    return mediaElement.play().then(() => {
+      pendingPlaybackElementsRef.current.delete(mediaElement);
+      if (pendingPlaybackElementsRef.current.size === 0) {
+        removePlaybackRetryListeners();
+        setAutoplayWarning('');
+      }
+    }).catch((err) => {
+      if (err?.name !== 'NotAllowedError') {
+        console.error('[WebRTC] Remote media playback failed:', err);
+        return;
+      }
+
+      pendingPlaybackElementsRef.current.add(mediaElement);
+      setAutoplayWarning(AUTOPLAY_WARNING);
+
+      if (!playbackRetryListenerRef.current) {
+        playbackRetryListenerRef.current = retryPendingMediaPlayback;
+        PLAYBACK_RETRY_EVENTS.forEach((eventName) => {
+          document.addEventListener(eventName, retryPendingMediaPlayback, true);
+        });
+      }
+    });
+  }, [removePlaybackRetryListeners, retryPendingMediaPlayback]);
+
+  const forgetRemoteMediaElement = useCallback((mediaElement) => {
+    if (!mediaElement) return;
+
+    pendingPlaybackElementsRef.current.delete(mediaElement);
+    if (pendingPlaybackElementsRef.current.size === 0) {
+      removePlaybackRetryListeners();
+      setAutoplayWarning('');
+    }
+  }, [removePlaybackRetryListeners]);
+
+  // ---------- local media helpers ----------
   const cleanupLocalAudio = useCallback(() => {
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
+    cameraTrackRef.current = null;
+    cameraEnabledRef.current = false;
+    cameraStateUpdatedAtRef.current = Date.now();
+    setCameraEnabled(false);
+    setCameraBusy(false);
+    setLocalVideoStream(null);
     setMicConnected(false);
   }, []);
 
@@ -104,11 +230,20 @@ export function useVoiceSession(userId) {
     console.log(`[WebRTC] Cleaning up connection for user: ${otherUserId}`);
     const pc = peerConnectionsRef.current[otherUserId];
     if (pc) {
+      const remoteStream = remoteStreamsRef.current[otherUserId];
+      remoteStream?.getTracks().forEach((track) => track.stop());
       try {
         pc.close();
       } catch (e) {}
       delete peerConnectionsRef.current[otherUserId];
     }
+    delete videoSendersRef.current[otherUserId];
+    delete remoteStreamsRef.current[otherUserId];
+    delete remoteCameraStateTimesRef.current[otherUserId];
+    delete makingOfferRef.current[otherUserId];
+    delete negotiationPendingRef.current[otherUserId];
+    delete ignoreOfferRef.current[otherUserId];
+    delete settingRemoteAnswerRef.current[otherUserId];
 
     // Clear any pending ICE candidates for this user
     delete pendingCandidatesRef.current[otherUserId];
@@ -122,20 +257,30 @@ export function useVoiceSession(userId) {
     delete lastAbsentRef.current[otherUserId];
     explicitlyLeftRef.current.delete(otherUserId);
 
-    const audioEl = document.getElementById(`remote-audio-${otherUserId}`);
-    if (audioEl) {
-      try {
-        audioEl.srcObject = null;
-        audioEl.remove();
-      } catch (e) {}
+    const audioElement = document.getElementById(`remote-audio-${otherUserId}`);
+    if (audioElement) {
+      forgetRemoteMediaElement(audioElement);
+      audioElement.srcObject = null;
+      audioElement.remove();
     }
+
+    setRemoteStreams((prev) => {
+      const next = { ...prev };
+      delete next[otherUserId];
+      return next;
+    });
+    setRemoteCameraStates((prev) => {
+      const next = { ...prev };
+      delete next[otherUserId];
+      return next;
+    });
     setConnectionStatuses((prev) => {
       const next = { ...prev };
       delete next[otherUserId];
       return next;
     });
     updateCallStatus();
-  }, [updateCallStatus]);
+  }, [forgetRemoteMediaElement, updateCallStatus]);
 
   const cleanupAllCalls = useCallback((reason) => {
     if (!reason) {
@@ -155,9 +300,10 @@ export function useVoiceSession(userId) {
     Object.keys(peerConnectionsRef.current).forEach((otherUserId) => {
       cleanupPeerConnection(otherUserId);
     });
+    clearPendingMediaPlayback();
     setConnectionStatuses({});
     setCallStatus('');
-  }, [cleanupPeerConnection]);
+  }, [cleanupPeerConnection, clearPendingMediaPlayback]);
 
   const sendSignal = useCallback(async (receiverId, signalType, signalData) => {
     if (!joinedChannelId || !joinedServerId || !userId) return;
@@ -177,6 +323,62 @@ export function useVoiceSession(userId) {
       console.error(`[WebRTC] Failed to send signal ${signalType} to ${receiverId}:`, signalErr);
     }
   }, [joinedChannelId, joinedServerId, userId]);
+
+  const negotiatePeer = useCallback(async (otherUserId, reason) => {
+    const pc = peerConnectionsRef.current[otherUserId];
+    if (!pc || pc.signalingState === 'closed') return false;
+
+    logVideoDiagnostic('negotiation-requested', otherUserId, {
+      reason,
+      signalingState: pc.signalingState,
+      connectionState: pc.connectionState,
+      iceConnectionState: pc.iceConnectionState,
+    });
+
+    if (makingOfferRef.current[otherUserId]) {
+      logVideoDiagnostic('negotiation-deferred', otherUserId, {
+        reason,
+        makingOffer: true,
+        signalingState: pc.signalingState,
+      });
+      return false;
+    }
+    if (pc.signalingState !== 'stable') {
+      negotiationPendingRef.current[otherUserId] = true;
+      logVideoDiagnostic('negotiation-deferred', otherUserId, {
+        reason,
+        makingOffer: false,
+        signalingState: pc.signalingState,
+      });
+      return false;
+    }
+
+    try {
+      negotiationPendingRef.current[otherUserId] = false;
+      makingOfferRef.current[otherUserId] = true;
+      const offer = await pc.createOffer();
+      logVideoDiagnostic('offer-created', otherUserId, {
+        reason,
+        signalingState: pc.signalingState,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+      });
+      await pc.setLocalDescription(offer);
+      await sendSignal(otherUserId, 'offer', pc.localDescription);
+      logVideoDiagnostic('offer-sent', otherUserId, {
+        reason,
+        signalingState: pc.signalingState,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+      });
+      return true;
+    } catch (err) {
+      console.error(`[WebRTC] Error negotiating with user ${otherUserId}:`, err);
+      return false;
+    } finally {
+      makingOfferRef.current[otherUserId] = false;
+    }
+  }, [logVideoDiagnostic, sendSignal]);
 
   const createPeerConnection = useCallback((otherUserId) => {
     console.log(`[WebRTC] Creating peer connection for user: ${otherUserId}`);
@@ -202,12 +404,26 @@ export function useVoiceSession(userId) {
 
     if (localStreamRef.current) {
       console.log(`[WebRTC] Adding local audio tracks to peer connection for ${otherUserId}`);
-      localStreamRef.current.getTracks().forEach((track) => {
+      localStreamRef.current.getAudioTracks().forEach((track) => {
         pc.addTrack(track, localStreamRef.current);
       });
     } else {
       console.warn(`[WebRTC] localStreamRef.current is empty when building connection for ${otherUserId}`);
     }
+
+    // Reserve one video sender in the initial negotiation. Camera toggles can then
+    // use replaceTrack without adding duplicate senders or causing offer glare.
+    const videoTransceiver = cameraTrackRef.current
+      ? pc.addTransceiver(cameraTrackRef.current, {
+        direction: 'sendrecv',
+        streams: localStreamRef.current ? [localStreamRef.current] : [],
+      })
+      : pc.addTransceiver('video', { direction: 'sendrecv' });
+    videoSendersRef.current[otherUserId] = videoTransceiver.sender;
+    logVideoDiagnostic('peer-video-sender-prepared', otherUserId, {
+      senderTrackId: videoTransceiver.sender.track?.id || null,
+      cameraEnabled: cameraEnabledRef.current,
+    });
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -247,6 +463,18 @@ export function useVoiceSession(userId) {
 
     pc.onsignalingstatechange = () => {
       console.log(`[WebRTC] Signaling state for user ${otherUserId}: ${pc.signalingState}`);
+      if (pc.signalingState === 'stable' && negotiationPendingRef.current[otherUserId]) {
+        negotiatePeer(otherUserId, 'deferred-until-stable');
+      }
+    };
+
+    pc.onnegotiationneeded = async () => {
+      logVideoDiagnostic('negotiationneeded-fired', otherUserId, {
+        signalingState: pc.signalingState,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+      });
+      await negotiatePeer(otherUserId, 'negotiationneeded');
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -270,24 +498,81 @@ export function useVoiceSession(userId) {
     };
 
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Remote track received from user ${otherUserId}, kind: ${event.track.kind}, readyState: ${event.track.readyState}`);
-      const remoteStream = event.streams[0];
-
-      let audioEl = document.getElementById(`remote-audio-${otherUserId}`);
-      if (!audioEl) {
-        audioEl = document.createElement('audio');
-        audioEl.id = `remote-audio-${otherUserId}`;
-        audioEl.autoplay = true;
-        audioEl.style.display = 'none';
-        document.body.appendChild(audioEl);
+      let remoteStream = remoteStreamsRef.current[otherUserId];
+      if (!remoteStream) {
+        remoteStream = new MediaStream();
+        remoteStreamsRef.current[otherUserId] = remoteStream;
       }
-      audioEl.srcObject = remoteStream;
+
+      if (!remoteStream.getTracks().some((track) => track.id === event.track.id)) {
+        remoteStream.addTrack(event.track);
+      }
+      logVideoDiagnostic('remote-track', otherUserId, {
+        trackKind: event.track.kind,
+        trackId: event.track.id,
+        trackReadyState: event.track.readyState,
+        trackMuted: event.track.muted,
+        eventStreamsLength: event.streams.length,
+        streamId: event.streams[0]?.id || remoteStream.id,
+        remoteStreamTrackKinds: remoteStream.getTracks().map((track) => track.kind),
+      });
+
+      event.track.onended = () => {
+        const currentStream = remoteStreamsRef.current[otherUserId];
+        currentStream?.removeTrack(event.track);
+        setRemoteStreams((prev) => ({ ...prev }));
+        if (event.track.kind === 'video') {
+          setRemoteCameraStates((prev) => ({ ...prev, [otherUserId]: false }));
+        }
+      };
+      if (event.track.kind === 'video') {
+        event.track.onunmute = () => {
+          logVideoDiagnostic('remote-video-unmuted', otherUserId, {
+            trackId: event.track.id,
+            trackReadyState: event.track.readyState,
+          });
+          setRemoteCameraStates((prev) => ({ ...prev, [otherUserId]: true }));
+        };
+        event.track.onmute = () => {
+          logVideoDiagnostic('remote-video-muted', otherUserId, {
+            trackId: event.track.id,
+            trackReadyState: event.track.readyState,
+          });
+          setRemoteCameraStates((prev) => ({ ...prev, [otherUserId]: false }));
+        };
+      }
+
+      if (event.track.kind === 'audio') {
+        let audioElement = document.getElementById(`remote-audio-${otherUserId}`);
+        if (!audioElement) {
+          audioElement = document.createElement('audio');
+          audioElement.id = `remote-audio-${otherUserId}`;
+          audioElement.autoplay = true;
+          audioElement.playsInline = true;
+          audioElement.muted = false;
+          audioElement.style.display = 'none';
+          document.body.appendChild(audioElement);
+        }
+        audioElement.srcObject = remoteStream;
+        playRemoteMedia(audioElement);
+      }
+
+      setRemoteStreams((prev) => ({ ...prev, [otherUserId]: remoteStream }));
       updateCallStatus();
     };
 
+    // Explicit ephemeral state keeps camera-off placeholders accurate even while
+    // the negotiated video receiver remains present.
+    const cameraState = {
+      enabled: cameraEnabledRef.current,
+      updatedAt: cameraStateUpdatedAtRef.current,
+    };
+    logVideoDiagnostic('camera-state-sending', otherUserId, cameraState);
+    sendSignal(otherUserId, 'camera-state', cameraState);
+
     return pc;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sendSignal, cleanupPeerConnection, updateCallStatus]);
+  }, [sendSignal, cleanupPeerConnection, updateCallStatus, negotiatePeer, logVideoDiagnostic, playRemoteMedia]);
 
   // ---------- reconnect helper ----------
   const reconnectPeer = useCallback(async (otherUserId) => {
@@ -317,11 +602,9 @@ export function useVoiceSession(userId) {
     const currentUserId = currentUserIdRef.current;
     if (currentUserId && currentUserId < otherUserId) {
       console.log(`[WebRTC] Re-creating connection and sending new offer to ${otherUserId}`);
-      const pc = createPeerConnection(otherUserId);
+      createPeerConnection(otherUserId);
       try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await sendSignal(otherUserId, 'offer', offer);
+        await negotiatePeer(otherUserId, 'reconnect');
       } catch (err) {
         console.error(`[WebRTC] Error creating/sending reconnect offer to ${otherUserId}:`, err);
       }
@@ -333,7 +616,7 @@ export function useVoiceSession(userId) {
     setTimeout(() => {
       delete reconnectingRef.current[otherUserId];
     }, 3000);
-  }, [cleanupPeerConnection, createPeerConnection, sendSignal]);
+  }, [cleanupPeerConnection, createPeerConnection, negotiatePeer]);
 
   const triggerReconnect = useCallback((otherUserId) => {
     // 1. Only reconnect if the peer is still present in voice_participants
@@ -396,40 +679,80 @@ export function useVoiceSession(userId) {
   }, []);
 
   const handleOffer = useCallback(async (senderId, offerSdp) => {
-    console.log(`[WebRTC] Receiving offer from user: ${senderId}`);
     let pc = peerConnectionsRef.current[senderId];
     if (!pc) {
       pc = createPeerConnection(senderId);
     }
 
+    const polite = String(currentUserIdRef.current) > String(senderId);
+    const readyForOffer = !makingOfferRef.current[senderId]
+      && (pc.signalingState === 'stable' || settingRemoteAnswerRef.current[senderId]);
+    const offerCollision = !readyForOffer;
+    ignoreOfferRef.current[senderId] = !polite && offerCollision;
+    logVideoDiagnostic('offer-received', senderId, {
+      polite,
+      offerCollision,
+      ignored: ignoreOfferRef.current[senderId],
+      signalingState: pc.signalingState,
+      connectionState: pc.connectionState,
+      iceConnectionState: pc.iceConnectionState,
+    });
+    if (ignoreOfferRef.current[senderId]) return;
+
     try {
+      if (offerCollision && pc.signalingState !== 'stable') {
+        await pc.setLocalDescription({ type: 'rollback' });
+        logVideoDiagnostic('offer-collision-rolled-back', senderId, {
+          signalingState: pc.signalingState,
+        });
+      }
       await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
       await flushPendingIceCandidates(pc, senderId);
       const answer = await pc.createAnswer();
+      logVideoDiagnostic('answer-created', senderId, {
+        signalingState: pc.signalingState,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+      });
       await pc.setLocalDescription(answer);
-      console.log(`[WebRTC] Sending answer to user: ${senderId}`);
-      await sendSignal(senderId, 'answer', answer);
+      await sendSignal(senderId, 'answer', pc.localDescription);
+      logVideoDiagnostic('answer-sent', senderId, {
+        signalingState: pc.signalingState,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+      });
     } catch (err) {
       console.error(`[WebRTC] Error handling offer from user ${senderId}:`, err);
     }
-  }, [createPeerConnection, sendSignal, flushPendingIceCandidates]);
+  }, [createPeerConnection, sendSignal, flushPendingIceCandidates, logVideoDiagnostic]);
 
   const handleAnswer = useCallback(async (senderId, answerSdp) => {
-    console.log(`[WebRTC] Receiving answer from user: ${senderId}`);
     const pc = peerConnectionsRef.current[senderId];
     if (pc) {
+      logVideoDiagnostic('answer-received', senderId, {
+        signalingState: pc.signalingState,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+      });
       try {
+        settingRemoteAnswerRef.current[senderId] = true;
         await pc.setRemoteDescription(new RTCSessionDescription(answerSdp));
         await flushPendingIceCandidates(pc, senderId);
       } catch (err) {
         console.error(`[WebRTC] Error setting remote answer for user ${senderId}:`, err);
+      } finally {
+        settingRemoteAnswerRef.current[senderId] = false;
       }
     } else {
       console.warn(`[WebRTC] RTCPeerConnection not found when handling answer from user: ${senderId}`);
     }
-  }, [flushPendingIceCandidates]);
+  }, [flushPendingIceCandidates, logVideoDiagnostic]);
 
   const handleIceCandidate = useCallback(async (senderId, candidateData) => {
+    if (ignoreOfferRef.current[senderId]) {
+      logVideoDiagnostic('ice-candidate-ignored-for-colliding-offer', senderId);
+      return;
+    }
     const pc = peerConnectionsRef.current[senderId];
     if (pc && pc.remoteDescription && pc.remoteDescription.type) {
       // Remote description is set — safe to add the candidate immediately
@@ -448,7 +771,7 @@ export function useVoiceSession(userId) {
       }
       pendingCandidatesRef.current[senderId].push(candidateData);
     }
-  }, []);
+  }, [logVideoDiagnostic]);
 
   const handleIncomingSignal = useCallback(async (signal) => {
     const { sender_id, signal_type, signal_data } = signal;
@@ -460,8 +783,217 @@ export function useVoiceSession(userId) {
       await handleAnswer(sender_id, signal_data);
     } else if (signal_type === 'ice-candidate') {
       await handleIceCandidate(sender_id, signal_data);
+    } else if (signal_type === 'camera-state') {
+      const enabled = Boolean(signal_data?.enabled);
+      const updatedAt = Number(signal_data?.updatedAt) || 0;
+      const previousUpdatedAt = remoteCameraStateTimesRef.current[sender_id] || 0;
+      logVideoDiagnostic('camera-state-received', sender_id, {
+        enabled,
+        updatedAt,
+        previousUpdatedAt,
+      });
+      if (updatedAt >= previousUpdatedAt) {
+        remoteCameraStateTimesRef.current[sender_id] = updatedAt;
+        setRemoteCameraStates((prev) => ({
+          ...prev,
+          [sender_id]: enabled,
+        }));
+        logVideoDiagnostic('camera-state-applied', sender_id, { enabled, updatedAt });
+      } else {
+        logVideoDiagnostic('camera-state-stale-ignored', sender_id, { enabled, updatedAt });
+      }
     }
-  }, [handleOffer, handleAnswer, handleIceCandidate]);
+  }, [handleOffer, handleAnswer, handleIceCandidate, logVideoDiagnostic]);
+
+  const broadcastCameraState = useCallback(async (enabled) => {
+    const remoteUserIds = participantsRef.current
+      .map((participant) => participant.user_id)
+      .filter((participantUserId) => participantUserId !== currentUserIdRef.current);
+
+    const updatedAt = cameraStateUpdatedAtRef.current;
+    await Promise.all(remoteUserIds.map((remoteUserId) => {
+      logVideoDiagnostic('camera-state-sending', remoteUserId, { enabled, updatedAt });
+      return sendSignal(remoteUserId, 'camera-state', { enabled, updatedAt });
+    }));
+  }, [sendSignal, logVideoDiagnostic]);
+
+  const handleTurnCameraOff = useCallback(async ({ notifyPeers = true } = {}) => {
+    const track = cameraTrackRef.current;
+    cameraTrackRef.current = null;
+    cameraEnabledRef.current = false;
+    cameraStateUpdatedAtRef.current = Date.now();
+
+    const replacements = Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+      const cachedSender = videoSendersRef.current[otherUserId];
+      const sender = pc.getTransceivers()
+        .find((transceiver) => (
+          transceiver.sender === cachedSender
+          || transceiver.sender.track?.kind === 'video'
+          || transceiver.receiver.track?.kind === 'video'
+        ))?.sender;
+      if (!sender) return;
+      try {
+        await sender.replaceTrack(null);
+        videoSendersRef.current[otherUserId] = sender;
+        logVideoDiagnostic('camera-track-removed', otherUserId, {
+          signalingState: pc.signalingState,
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+        });
+      } catch (err) {
+        console.error(`[WebRTC] Failed to stop camera sender for ${otherUserId}:`, err);
+        setCameraError('Camera stopped locally, but one connection could not update cleanly. Audio is still connected.');
+      }
+    });
+    await Promise.all(replacements);
+
+    if (track) {
+      track.onended = null;
+      localStreamRef.current?.removeTrack(track);
+      track.stop();
+    }
+
+    setLocalVideoStream(null);
+    setCameraEnabled(false);
+    setCameraBusy(false);
+    if (notifyPeers) {
+      await broadcastCameraState(false);
+    }
+  }, [broadcastCameraState, logVideoDiagnostic]);
+
+  useEffect(() => {
+    stopCameraRef.current = handleTurnCameraOff;
+  }, [handleTurnCameraOff]);
+
+  const handleTurnCameraOn = useCallback(async () => {
+    if (!isJoinedRef.current || cameraTrackRef.current || cameraBusy) return;
+
+    setCameraBusy(true);
+    setCameraError('');
+    try {
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 24, max: 30 },
+        },
+      });
+      const videoTrack = cameraStream.getVideoTracks()[0];
+      if (!videoTrack) {
+        throw new DOMException('No camera video track was returned.', 'NotFoundError');
+      }
+
+      cameraTrackRef.current = videoTrack;
+      cameraEnabledRef.current = true;
+      cameraStateUpdatedAtRef.current = Date.now();
+      localStreamRef.current?.addTrack(videoTrack);
+      videoTrack.onended = () => {
+        setCameraError('The camera disconnected or stopped. Audio is still connected.');
+        stopCameraRef.current?.();
+      };
+
+      logVideoDiagnostic('camera-started', null, {
+        cameraTrackId: videoTrack.id,
+        cameraTrackReadyState: videoTrack.readyState,
+        peerConnectionCount: Object.keys(peerConnectionsRef.current).length,
+      });
+
+      const replacements = await Promise.allSettled(
+        Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+          const senders = pc.getSenders();
+          const cachedSender = videoSendersRef.current[otherUserId];
+          const videoTransceivers = pc.getTransceivers().filter((transceiver) => (
+            transceiver.sender === cachedSender
+            || transceiver.sender.track?.kind === 'video'
+            || transceiver.receiver.track?.kind === 'video'
+          ));
+          let sender = videoTransceivers[0]?.sender;
+          logVideoDiagnostic('camera-peer-inspected', otherUserId, {
+            cameraTrackId: videoTrack.id,
+            cameraTrackReadyState: videoTrack.readyState,
+            existingSenderTrackKinds: senders.map((existingSender) => existingSender.track?.kind || null),
+            videoSenderCount: videoTransceivers.length,
+            signalingState: pc.signalingState,
+            connectionState: pc.connectionState,
+            iceConnectionState: pc.iceConnectionState,
+          });
+
+          try {
+            if (sender) {
+              if (sender.track?.id !== videoTrack.id) {
+                await sender.replaceTrack(videoTrack);
+              }
+              videoSendersRef.current[otherUserId] = sender;
+              logVideoDiagnostic('camera-track-replaced', otherUserId, {
+                cameraTrackId: videoTrack.id,
+                renegotiationRequested: false,
+              });
+            } else {
+              sender = pc.addTrack(videoTrack, cameraStream);
+              videoSendersRef.current[otherUserId] = sender;
+              logVideoDiagnostic('camera-track-added', otherUserId, {
+                cameraTrackId: videoTrack.id,
+                renegotiationRequested: true,
+              });
+              await negotiatePeer(otherUserId, 'camera-track-added');
+            }
+          } catch (err) {
+            console.error(`[WebRTC] Failed to send camera to ${otherUserId}:`, err);
+            throw err;
+          }
+        })
+      );
+      if (replacements.some((result) => result.status === 'rejected')) {
+        throw new Error('One or more camera senders could not be updated.');
+      }
+
+      setLocalVideoStream(new MediaStream([videoTrack]));
+      setCameraEnabled(true);
+      await broadcastCameraState(true);
+    } catch (err) {
+      console.error('[WebRTC] Camera access or track update failed:', err);
+      const failedTrack = cameraTrackRef.current;
+      cameraTrackRef.current = null;
+      cameraEnabledRef.current = false;
+      cameraStateUpdatedAtRef.current = Date.now();
+      await Promise.all(Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+        const cachedSender = videoSendersRef.current[otherUserId];
+        const sender = pc.getTransceivers()
+          .find((transceiver) => (
+            transceiver.sender === cachedSender
+            || transceiver.sender.track?.kind === 'video'
+            || transceiver.receiver.track?.kind === 'video'
+          ))?.sender;
+        if (!sender) return;
+        try {
+          await sender.replaceTrack(null);
+        } catch (replaceErr) {
+          console.error('[WebRTC] Failed to roll back a camera sender:', replaceErr);
+        }
+      }));
+      if (failedTrack) {
+        localStreamRef.current?.removeTrack(failedTrack);
+        failedTrack.onended = null;
+        failedTrack.stop();
+      }
+      setLocalVideoStream(null);
+      setCameraEnabled(false);
+
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setCameraError('Camera permission was denied. Your audio call is still connected.');
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setCameraError('No camera was found. Your audio call is still connected.');
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setCameraError('The camera is already in use or unavailable. Your audio call is still connected.');
+      } else {
+        setCameraError('Camera could not be started. Your audio call is still connected.');
+      }
+      await broadcastCameraState(false);
+    } finally {
+      setCameraBusy(false);
+    }
+  }, [broadcastCameraState, cameraBusy, logVideoDiagnostic, negotiatePeer]);
 
   const fetchParticipants = useCallback(async () => {
     if (!joinedChannelId) return;
@@ -593,6 +1125,7 @@ export function useVoiceSession(userId) {
     if (!joinedChannelId || !userId) return;
     setError('');
 
+    await handleTurnCameraOff();
     cleanupLocalAudio();
     cleanupAllCalls('manual-disconnect');
 
@@ -687,8 +1220,9 @@ export function useVoiceSession(userId) {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       cleanupVoiceSession('unmount');
+      clearPendingMediaPlayback();
     };
-  }, [cleanupVoiceSession]);
+  }, [cleanupVoiceSession, clearPendingMediaPlayback]);
 
   // Load and poll participants
   useEffect(() => {
@@ -818,11 +1352,9 @@ export function useVoiceSession(userId) {
         // Deterministic offer rule: smaller userId sends offer
         if (userId < otherUserId) {
           console.log(`[WebRTC] Sending offer to ${otherUserId} (we are initiator)`);
-          const pc = createPeerConnection(otherUserId);
+          createPeerConnection(otherUserId);
           try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            await sendSignal(otherUserId, 'offer', offer);
+            await negotiatePeer(otherUserId, 'initial-connection');
           } catch (err) {
             console.error(`[WebRTC] Error creating/sending offer to ${otherUserId}:`, err);
           }
@@ -872,7 +1404,7 @@ export function useVoiceSession(userId) {
         }
       }
     });
-  }, [participants, joinedChannelId, micConnected, userId, createPeerConnection, sendSignal, cleanupPeerConnection, cleanupAllCalls]);
+  }, [participants, joinedChannelId, micConnected, userId, createPeerConnection, negotiatePeer, cleanupPeerConnection, cleanupAllCalls]);
 
   // ---------- voice participants realtime subscription ----------
   useEffect(() => {
@@ -944,5 +1476,17 @@ export function useVoiceSession(userId) {
     handleToggleMute,
     connectionStatuses,
     turnWarning,
+    cameraEnabled,
+    cameraBusy,
+    cameraError,
+    setCameraError,
+    autoplayWarning,
+    playRemoteMedia,
+    forgetRemoteMediaElement,
+    localVideoStream,
+    remoteStreams,
+    remoteCameraStates,
+    handleTurnCameraOn,
+    handleTurnCameraOff,
   };
 }

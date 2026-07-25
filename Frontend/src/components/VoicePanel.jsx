@@ -4,6 +4,49 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 
+function VideoStream({
+  stream,
+  muted = false,
+  mirrored = false,
+  playRemoteMedia,
+  forgetRemoteMediaElement,
+}) {
+  const mediaRef = useRef(null);
+
+  useEffect(() => {
+    const mediaElement = mediaRef.current;
+    if (!mediaElement) return;
+
+    mediaElement.srcObject = stream || null;
+    if (stream) {
+      if (muted) {
+        mediaElement.play().catch((err) => {
+          console.error('[WebRTC] Local video preview playback failed:', err);
+        });
+      } else {
+        playRemoteMedia(mediaElement);
+      }
+    }
+
+    return () => {
+      if (!muted) {
+        forgetRemoteMediaElement(mediaElement);
+      }
+      mediaElement.srcObject = null;
+    };
+  }, [stream, muted, playRemoteMedia, forgetRemoteMediaElement]);
+
+  return (
+    <video
+      ref={mediaRef}
+      className={mirrored ? 'voice-video-tile__video voice-video-tile__video--mirrored' : 'voice-video-tile__video'}
+      autoPlay
+      playsInline
+      muted={muted}
+    />
+  );
+}
+
 export default function VoicePanel({
   channelId,
   channelName,
@@ -28,6 +71,7 @@ export default function VoicePanel({
   const isJoinedHere = voiceSession.joinedChannelId === channelId;
   const isMuted = voiceSession.isMuted;
   const joining = voiceSession.joining;
+  const cameraEnabled = voiceSession.cameraEnabled;
 
   const activeParticipants = isJoinedHere ? (voiceSession.participants || []) : participants;
   const activeLoading = isJoinedHere ? voiceSession.loading : loading;
@@ -203,15 +247,24 @@ export default function VoicePanel({
       </div>
 
       {/* Error */}
-      {(error || voiceSession.error) && (
+      {(error || voiceSession.error || voiceSession.cameraError || voiceSession.autoplayWarning) && (
         <div className="voice-panel__error">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10" />
             <line x1="15" y1="9" x2="9" y2="15" />
             <line x1="9" y1="9" x2="15" y2="15" />
           </svg>
-          <span>{error || voiceSession.error}</span>
-          <button className="voice-panel__error-dismiss" onClick={() => setError('')}>×</button>
+          <span>{error || voiceSession.error || voiceSession.cameraError || voiceSession.autoplayWarning}</span>
+          <button
+            className="voice-panel__error-dismiss"
+            onClick={() => {
+              setError('');
+              voiceSession.setError('');
+              voiceSession.setCameraError('');
+            }}
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -284,6 +337,28 @@ export default function VoicePanel({
               )}
             </button>
             <button
+              className={`voice-panel__btn voice-panel__btn--camera ${cameraEnabled ? 'voice-panel__btn--camera-on' : ''}`}
+              onClick={cameraEnabled ? () => voiceSession.handleTurnCameraOff() : voiceSession.handleTurnCameraOn}
+              disabled={voiceSession.cameraBusy}
+              title={cameraEnabled ? 'Turn Camera Off' : 'Turn Camera On'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {cameraEnabled ? (
+                  <>
+                    <polygon points="23 7 16 12 23 17 23 7" />
+                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M1 1l22 22" />
+                    <path d="M15.5 9.5L23 5v14l-5.2-3.1" />
+                    <path d="M13 5H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z" />
+                  </>
+                )}
+              </svg>
+              {voiceSession.cameraBusy ? 'Starting Camera...' : (cameraEnabled ? 'Turn Camera Off' : 'Turn Camera On')}
+            </button>
+            <button
               className="voice-panel__btn voice-panel__btn--leave"
               onClick={handleLeave}
             >
@@ -296,6 +371,53 @@ export default function VoicePanel({
           </div>
         )}
       </div>
+
+      {isJoinedHere && activeParticipants.length > 0 && (
+        <div className="voice-video-grid" aria-label="Call video">
+          {activeParticipants.map((participant) => {
+            const isMe = participant.user_id === userId;
+            const username = participant.profiles?.username || (isMe ? profile?.username : null) || 'Unknown';
+            const stream = isMe
+              ? voiceSession.localVideoStream
+              : voiceSession.remoteStreams?.[participant.user_id];
+            const participantCameraState = isMe
+              ? cameraEnabled
+              : voiceSession.remoteCameraStates?.[participant.user_id];
+            const hasLiveVideoTrack = Boolean(
+              stream?.getVideoTracks().some((track) => track.readyState === 'live' && !track.muted)
+            );
+            const hasLiveVideo = Boolean(
+              hasLiveVideoTrack
+              && (isMe ? participantCameraState : participantCameraState !== false)
+            );
+
+            return (
+              <div className="voice-video-tile" key={`video-${participant.user_id}`}>
+                <div className="voice-video-tile__media">
+                  {hasLiveVideo ? (
+                    <VideoStream
+                      stream={stream}
+                      muted={isMe}
+                      mirrored={isMe}
+                      playRemoteMedia={voiceSession.playRemoteMedia}
+                      forgetRemoteMediaElement={voiceSession.forgetRemoteMediaElement}
+                    />
+                  ) : (
+                    <div className="voice-video-tile__placeholder">
+                      <span>{username[0]?.toUpperCase() || '?'}</span>
+                      <small>Camera off</small>
+                    </div>
+                  )}
+                </div>
+                <div className="voice-video-tile__label">
+                  <span>{username}{isMe ? ' (You)' : ''}</span>
+                  {participant.is_muted && <span className="voice-video-tile__muted">Muted</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Participants list */}
       <div className="voice-panel__participants">
