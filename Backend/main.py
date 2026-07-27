@@ -1,6 +1,7 @@
 import os
 import time
 import hashlib
+import warnings
 # pyrefly: ignore [missing-import]
 import httpx
 # pyrefly: ignore [missing-import]
@@ -23,6 +24,8 @@ import secrets
 import string
 from datetime import datetime, timezone
 from fastapi import UploadFile, File, Header, Depends
+# pyrefly: ignore [missing-import]
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 
 # LangChain and Gemini imports (embeddings only)
@@ -183,6 +186,13 @@ PERMISSIONS = {
 VALID_ROLES = {"owner", "admin", "member"}
 ROLE_RANK = {"member": 1, "admin": 2, "owner": 3}
 DEFAULT_CHANNELS = ("general", "assignments", "resources")
+SERVER_ICONS_BUCKET = "server-icons"
+SERVER_ICON_MAX_BYTES = 2 * 1024 * 1024
+SERVER_ICON_FORMATS = {
+    "JPEG": ("jpg", "image/jpeg"),
+    "PNG": ("png", "image/png"),
+    "WEBP": ("webp", "image/webp"),
+}
 
 
 class RoleUpdateRequest(BaseModel):
@@ -266,6 +276,52 @@ class SupabaseRestClient:
             raise HTTPException(status_code=500, detail="Database function failed. Ensure the Phase 14 migration has been run.")
         return response.json() if response.text else None
 
+    async def storage_list(self, bucket: str, prefix: str, *, limit: int, offset: int):
+        url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/list/{bucket}"
+        payload = {
+            "prefix": prefix,
+            "limit": limit,
+            "offset": offset,
+            "sortBy": {"column": "name", "order": "asc"},
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(url, json=payload, headers=self._headers())
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Storage list failed with status {response.status_code}: {response.text[:400]}"
+            )
+        return response.json()
+
+    async def storage_upload(self, bucket: str, path: str, content: bytes, content_type: str):
+        url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}/{path}"
+        headers = {
+            "apikey": self.api_key,
+            "Authorization": f"Bearer {self.bearer_token}",
+            "Content-Type": content_type,
+            "Cache-Control": "max-age=31536000",
+            "x-upsert": "false",
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(url, content=content, headers=headers)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Storage upload failed with status {response.status_code}.")
+        return response.json() if response.text else None
+
+    async def storage_remove(self, bucket: str, paths: list[str]):
+        url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.request(
+                "DELETE",
+                url,
+                json={"prefixes": paths},
+                headers=self._headers(),
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Storage delete failed with status {response.status_code}: {response.text[:400]}"
+            )
+        return response.json() if response.text else None
+
 
 def supabase_user(access_token: str) -> SupabaseRestClient:
     if not _supabase_configured():
@@ -283,6 +339,70 @@ def supabase_admin() -> SupabaseRestClient:
             detail="This operation requires SUPABASE_SERVICE_ROLE_KEY in Backend/.env.",
         )
     return SupabaseRestClient("admin", SUPABASE_SERVICE_ROLE_KEY, SUPABASE_SERVICE_ROLE_KEY)
+
+
+async def cleanup_server_icon_objects(server_id: str):
+    client = supabase_admin()
+    prefix = f"{server_id}/"
+    limit = 1000
+    offset = 0
+    paths: list[str] = []
+
+    while True:
+        objects = await client.storage_list(
+            SERVER_ICONS_BUCKET,
+            prefix,
+            limit=limit,
+            offset=offset,
+        )
+        for stored_object in objects:
+            name = stored_object.get("name")
+            if name:
+                paths.append(name if name.startswith(prefix) else f"{prefix}{name}")
+        if len(objects) < limit:
+            break
+        offset += limit
+
+    for start in range(0, len(paths), 100):
+        await client.storage_remove(SERVER_ICONS_BUCKET, paths[start:start + 100])
+
+
+def validate_server_icon_content(content: bytes) -> tuple[str, str]:
+    if not content:
+        raise HTTPException(status_code=400, detail="The selected image is empty.")
+    if len(content) > SERVER_ICON_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Server icons must be 2 MB or smaller.")
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(content)) as image:
+                image_format = image.format
+                image.verify()
+            with Image.open(io.BytesIO(content)) as image:
+                image.load()
+                if not image.width or not image.height:
+                    raise ValueError("Image has invalid dimensions.")
+    except (
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        ValueError,
+        Image.DecompressionBombWarning,
+        Image.DecompressionBombError,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="The selected file is not a readable JPEG, PNG, or WebP image.",
+        )
+
+    icon_format = SERVER_ICON_FORMATS.get(image_format)
+    if not icon_format:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a JPEG, PNG, or WebP image. Other formats are not supported.",
+        )
+    return icon_format
 
 
 async def get_current_user(authorization: str | None = Header(default=None)):
@@ -648,6 +768,109 @@ async def update_server(server_id: str, request: ServerUpdateRequest, user=Depen
     return {"success": True, "server": server}
 
 
+async def update_server_icon_path(
+    client: SupabaseRestClient,
+    server_id: str,
+    icon_path: str | None,
+):
+    update_error = None
+    try:
+        rows = await client.rest(
+            "PATCH",
+            "servers",
+            params={"id": f"eq.{server_id}"},
+            json_body={"icon_path": icon_path},
+            prefer="return=representation",
+        )
+        if rows:
+            return rows[0]
+    except HTTPException as error:
+        update_error = error
+        rows = None
+
+    # A network response can be lost after Postgres commits. Confirm the
+    # caller-RLS-protected row before deciding whether Storage needs rollback.
+    confirmation = await get_server(client, server_id)
+    if confirmation.get("icon_path") == icon_path:
+        return confirmation
+    if rows is not None:
+        raise HTTPException(status_code=403, detail="The server icon update was not accepted.")
+    raise update_error or HTTPException(
+        status_code=500,
+        detail="The server icon update could not be confirmed.",
+    )
+
+
+@app.put("/api/servers/{server_id}/icon")
+async def upload_server_icon(
+    server_id: str,
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    client = user["supabase_user"]
+    await require_server_permission(client, server_id, user["id"], "manage_server")
+    current_server = await get_server(client, server_id)
+
+    try:
+        content = await file.read(SERVER_ICON_MAX_BYTES + 1)
+    finally:
+        await file.close()
+    extension, content_type = validate_server_icon_content(content)
+
+    new_icon_path = f"{server_id}/{uuid.uuid4()}.{extension}"
+    old_icon_path = current_server.get("icon_path")
+    storage = supabase_admin()
+
+    try:
+        await storage.storage_upload(
+            SERVER_ICONS_BUCKET,
+            new_icon_path,
+            content,
+            content_type,
+        )
+    except Exception as upload_error:
+        print(f"[SERVER-ICON-UPLOAD] Storage upload failed for server {server_id}: {upload_error}")
+        raise HTTPException(status_code=502, detail="The server icon could not be uploaded.")
+
+    try:
+        server = await update_server_icon_path(client, server_id, new_icon_path)
+    except Exception:
+        try:
+            await storage.storage_remove(SERVER_ICONS_BUCKET, [new_icon_path])
+        except Exception as cleanup_error:
+            print(f"[SERVER-ICON-CLEANUP] Upload rollback failed for server {server_id}: {cleanup_error}")
+        raise
+
+    if old_icon_path and old_icon_path != new_icon_path:
+        try:
+            await storage.storage_remove(SERVER_ICONS_BUCKET, [old_icon_path])
+        except Exception as cleanup_error:
+            print(f"[SERVER-ICON-CLEANUP] Old icon cleanup failed for server {server_id}: {cleanup_error}")
+
+    _audit("update_server_icon", server_id, user["id"], success=True)
+    return {"success": True, "server": server, "icon_path": server.get("icon_path")}
+
+
+@app.delete("/api/servers/{server_id}/icon")
+async def remove_server_icon(server_id: str, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    await require_server_permission(client, server_id, user["id"], "manage_server")
+    current_server = await get_server(client, server_id)
+    old_icon_path = current_server.get("icon_path")
+
+    if not old_icon_path:
+        return {"success": True, "server": current_server, "icon_path": None}
+
+    server = await update_server_icon_path(client, server_id, None)
+    try:
+        await supabase_admin().storage_remove(SERVER_ICONS_BUCKET, [old_icon_path])
+    except Exception as cleanup_error:
+        print(f"[SERVER-ICON-CLEANUP] Removed icon cleanup failed for server {server_id}: {cleanup_error}")
+
+    _audit("remove_server_icon", server_id, user["id"], success=True)
+    return {"success": True, "server": server, "icon_path": None}
+
+
 @app.post("/api/servers/{server_id}/regenerate-invite")
 async def regenerate_invite(server_id: str, user=Depends(get_current_user)):
     client = user["supabase_user"]
@@ -671,6 +894,10 @@ async def delete_server(server_id: str, user=Depends(get_current_user)):
     if actor_role != "owner":
         raise HTTPException(status_code=403, detail="Only the server owner can delete this server.")
     await client.rest("DELETE", "servers", params={"id": f"eq.{server_id}"})
+    try:
+        await cleanup_server_icon_objects(server_id)
+    except Exception as cleanup_error:
+        print(f"[SERVER-ICON-CLEANUP] Failed for server {server_id}: {cleanup_error}")
     _audit("delete_server", server_id, user["id"], success=True)
     return {"success": True, "message": "Server deleted."}
 

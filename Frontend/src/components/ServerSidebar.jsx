@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { getServerIconPublicUrl } from '../lib/serverIcons';
 
 function getInitials(name) {
   return name
@@ -7,6 +8,24 @@ function getInitials(name) {
     .join('')
     .toUpperCase()
     .slice(0, 2);
+}
+
+function ServerIconContents({ server }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const iconUrl = getServerIconPublicUrl(server.icon_path);
+
+  if (iconUrl && !imageFailed) {
+    return (
+      <img
+        className="server-icon__image"
+        src={iconUrl}
+        alt={`${server.name} icon`}
+        onError={() => setImageFailed(true)}
+      />
+    );
+  }
+
+  return <span className="server-icon__label">{getInitials(server.name)}</span>;
 }
 
 export default function ServerSidebar({
@@ -101,7 +120,7 @@ export default function ServerSidebar({
               onClick={() => onSelectServer(server.id)}
             >
               {activeServerId === server.id && <span className="server-icon__pill" />}
-              <span className="server-icon__label">{getInitials(server.name)}</span>
+              <ServerIconContents key={server.icon_path || 'initials'} server={server} />
             </div>
           ))}
 

@@ -8,16 +8,17 @@ async function getAuthHeaders() {
     throw new Error('You must be signed in to do that.');
   }
   return {
-    'Content-Type': 'application/json',
     Authorization: `Bearer ${session.access_token}`,
   };
 }
 
 export async function apiRequest(path, options = {}) {
   const headers = await getAuthHeaders();
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
+      ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
       ...headers,
       ...(options.headers || {}),
     },

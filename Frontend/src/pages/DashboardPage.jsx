@@ -173,6 +173,31 @@ export default function DashboardPage() {
     fetchServers();
   }, [fetchServers]);
 
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const channel = supabase
+      .channel(`servers_watch:${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'servers',
+        },
+        (payload) => {
+          setServers((currentServers) => currentServers.map((server) => (
+            server.id === payload.new.id ? { ...server, ...payload.new } : server
+          )));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id]);
+
   // ──────────────────────────────────────────────
   // 3. Load channels for selected server
   // ──────────────────────────────────────────────

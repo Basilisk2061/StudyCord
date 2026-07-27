@@ -1,5 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '../lib/api';
+import {
+  getServerIconPublicUrl,
+  validateServerIcon,
+} from '../lib/serverIcons';
 import { canManageTargetMember, hasServerPermission } from '../lib/permissions';
 
 function displayProfile(profile) {
@@ -16,6 +20,28 @@ function MemberAvatar({ profile }) {
     return <img className="settings-avatar" src={profile.avatar_url} alt={name} />;
   }
   return <div className="settings-avatar settings-avatar--fallback">{initials(name)}</div>;
+}
+
+function ServerIconPreview({ serverName, iconPath }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const iconUrl = getServerIconPublicUrl(iconPath);
+
+  if (iconUrl && !imageFailed) {
+    return (
+      <img
+        className="settings-server-icon-preview"
+        src={iconUrl}
+        alt={`${serverName} icon`}
+        onError={() => setImageFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <div className="settings-server-icon-preview settings-server-icon-preview--fallback">
+      {initials(serverName)}
+    </div>
+  );
 }
 
 export default function ServerSettingsModal({
@@ -39,6 +65,7 @@ export default function ServerSettingsModal({
   const [transferTarget, setTransferTarget] = useState('');
   const [transferPhrase, setTransferPhrase] = useState('');
   const [deletePhrase, setDeletePhrase] = useState('');
+  const iconInputRef = useRef(null);
 
   const canManageServer = hasServerPermission(currentRole, 'manage_server');
   const isOwner = currentRole === 'owner';
@@ -93,6 +120,45 @@ export default function ServerSettingsModal({
         body: JSON.stringify({ name, description }),
       });
     });
+  }
+
+  async function uploadServerIcon(file) {
+    if (!file || busyKey) return;
+    setBusyKey('icon-upload');
+    setError('');
+
+    try {
+      await validateServerIcon(file);
+      const formData = new FormData();
+      formData.append('file', file);
+      await apiRequest(`/api/servers/${server.id}/icon`, {
+        method: 'PUT',
+        body: formData,
+      });
+      await onRefresh();
+      notify(server.icon_path ? 'Server icon changed' : 'Server icon added');
+    } catch (uploadError) {
+      setError(uploadError.message || 'Failed to update the server icon.');
+    } finally {
+      setBusyKey('');
+    }
+  }
+
+  async function removeServerIcon() {
+    const oldIconPath = server.icon_path;
+    if (!oldIconPath || busyKey) return;
+
+    setBusyKey('icon-remove');
+    setError('');
+    try {
+      await apiRequest(`/api/servers/${server.id}/icon`, { method: 'DELETE' });
+      await onRefresh();
+      notify('Server icon removed');
+    } catch (removeError) {
+      setError(removeError.message || 'Failed to remove the server icon.');
+    } finally {
+      setBusyKey('');
+    }
   }
 
   async function regenerateInvite() {
@@ -192,6 +258,55 @@ export default function ServerSettingsModal({
           {activeTab === 'overview' && (
             canManageServer ? (
               <form className="settings-stack" onSubmit={saveOverview}>
+                <div className="settings-server-icon-section">
+                  <label className="form-label">Server Icon</label>
+                  <div className="settings-server-icon-row">
+                    <ServerIconPreview
+                      key={server.icon_path || 'initials'}
+                      serverName={server.name}
+                      iconPath={server.icon_path}
+                    />
+                    <div className="settings-server-icon-controls">
+                      <span className="settings-server-icon-name">{server.name}</span>
+                      <span className="settings-muted">JPEG, PNG, or WebP. Maximum 2 MB.</span>
+                      <div className="settings-server-icon-actions">
+                        <input
+                          ref={iconInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          hidden
+                          onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            event.target.value = '';
+                            if (file) uploadServerIcon(file);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-secondary settings-btn settings-icon-action"
+                          onClick={() => iconInputRef.current?.click()}
+                          disabled={Boolean(busyKey)}
+                        >
+                          {busyKey === 'icon-upload'
+                            ? 'Uploading...'
+                            : server.icon_path
+                              ? 'Change Icon'
+                              : 'Upload Icon'}
+                        </button>
+                        {server.icon_path && (
+                          <button
+                            type="button"
+                            className="settings-link-btn settings-link-btn--danger"
+                            onClick={removeServerIcon}
+                            disabled={Boolean(busyKey)}
+                          >
+                            {busyKey === 'icon-remove' ? 'Removing...' : 'Remove Icon'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 <label className="form-label">Server Name</label>
                 <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} disabled={busyKey === 'overview'} />
                 <label className="form-label">Description</label>
