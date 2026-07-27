@@ -7,21 +7,16 @@ import MainPanel from '../components/MainPanel';
 import VoicePanel from '../components/VoicePanel';
 import RightPanel from '../components/RightPanel';
 import { useVoiceSession } from '../hooks/useVoiceSession';
-
-function generateInviteCode() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let result = '';
-  for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
+import ServerSettingsModal from '../components/ServerSettingsModal';
+import { apiRequest } from '../lib/api';
+import { getCurrentMemberRole } from '../lib/permissions';
 
 export default function DashboardPage() {
   const { session } = useAuth();
   const user = session?.user;
 
   const voiceSession = useVoiceSession(user?.id);
+  const { handleLeave: leaveVoiceSession } = voiceSession;
 
   // ---------- profile ----------
   const [profile, setProfile] = useState(null);
@@ -52,6 +47,8 @@ export default function DashboardPage() {
   // ---------- layout ----------
   const [channelSidebarOpen, setChannelSidebarOpen] = useState(true);
   const [mobilePanelView, setMobilePanelView] = useState('sidebar');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [toast, setToast] = useState('');
 
   // ──────────────────────────────────────────────
   // 1. Ensure profile exists
@@ -196,10 +193,12 @@ export default function DashboardPage() {
         .select(`
           role,
           user_id,
+          joined_at,
           profiles (
             username,
             full_name,
-            avatar_url
+            avatar_url,
+            email
           )
         `)
         .eq('server_id', serverId);
@@ -225,61 +224,13 @@ export default function DashboardPage() {
   const handleCreateServer = async (serverName) => {
     if (!user || !serverName.trim()) return;
 
-    // Log the user ID as requested for verification
-    console.log('Creating server for user ID:', user.id);
-
     try {
-      // Step 1: Ensure profile exists (upsert — idempotent)
-      const username = user.email.split('@')[0];
-      const { error: profileErr } = await supabase
-        .from('profiles')
-        .upsert(
-          { id: user.id, email: user.email, username },
-          { onConflict: 'id' }
-        );
-
-      if (profileErr) throw new Error(`profile error: ${profileErr.message}`);
-
-      // Generate a unique 6-character invite code
-      const inviteCode = generateInviteCode();
-
-      // Step 2: Insert server with owner_id and invite_code
-      const { data: newServer, error: srvErr } = await supabase
-        .from('servers')
-        .insert({
-          name: serverName.trim(),
-          owner_id: user.id,
-          invite_code: inviteCode
-        })
-        .select()
-        .single();
-
-      if (srvErr) throw new Error(`server error: ${srvErr.message}`);
-
-      // Step 3: Insert owner membership
-      const { error: memErr } = await supabase
-        .from('server_members')
-        .insert({ server_id: newServer.id, user_id: user.id, role: 'owner' });
-
-      if (memErr) throw new Error(`member error: ${memErr.message}`);
-
-      // Step 4: Create default channels
-      const defaultChannels = ['general', 'assignments', 'resources'];
-      const channelRows = defaultChannels.map((name) => ({
-        server_id: newServer.id,
-        name,
-        type: 'text',
-      }));
-
-      const { error: chErr } = await supabase
-        .from('channels')
-        .insert(channelRows);
-
-      if (chErr) throw new Error(`channel error: ${chErr.message}`);
-
-      // Step 5: Refresh servers list and auto-select new server
+      const data = await apiRequest('/api/servers', {
+        method: 'POST',
+        body: JSON.stringify({ name: serverName }),
+      });
       await fetchServers();
-      setActiveServerId(newServer.id);
+      setActiveServerId(data.server.id);
       setActiveChannelId(null);
       setActiveChannelName(null);
       setActiveChannelType(null);
@@ -291,6 +242,7 @@ export default function DashboardPage() {
     }
   };
 
+
   // ──────────────────────────────────────────────
   // 5. Create a new channel
   // ──────────────────────────────────────────────
@@ -298,17 +250,10 @@ export default function DashboardPage() {
     if (!activeServerId || !channelName.trim()) return;
 
     try {
-      const { error } = await supabase
-        .from('channels')
-        .insert({
-          server_id: activeServerId,
-          name: channelName.trim().toLowerCase().replace(/\s+/g, '-'),
-          type: channelType,
-        });
-
-      if (error) throw error;
-
-      // Refresh channels
+      await apiRequest(`/api/servers/${activeServerId}/channels`, {
+        method: 'POST',
+        body: JSON.stringify({ name: channelName, type: channelType }),
+      });
       await fetchChannels(activeServerId);
 
       return { success: true };
@@ -318,74 +263,27 @@ export default function DashboardPage() {
     }
   };
 
-  // ──────────────────────────────────────────────
-  // 5b. Join a server via invite code
-  // ──────────────────────────────────────────────
   const handleJoinServer = async (inviteCode) => {
     if (!user || !inviteCode.trim()) return;
 
-    const cleanCode = inviteCode.trim().toUpperCase();
-
     try {
-      // Step 1: Find server by invite code
-      const { data: server, error: serverErr } = await supabase
-        .from('servers')
-        .select('*')
-        .eq('invite_code', cleanCode)
-        .maybeSingle();
-
-      if (serverErr) throw serverErr;
-      if (!server) {
-        return { success: false, error: 'Invalid invite code. Server not found.' };
-      }
-
-      // Step 2: Check if already a member
-      const { data: existingMember, error: memberCheckErr } = await supabase
-        .from('server_members')
-        .select('*')
-        .eq('server_id', server.id)
-        .eq('user_id', user.id)
-        .maybeSingle();
-
-      if (memberCheckErr) throw memberCheckErr;
-
-      if (existingMember) {
-        // Already joined — select it and return success
-        setActiveServerId(server.id);
-        setActiveChannelId(null);
-        setActiveChannelName(null);
-        setActiveChannelType(null);
-        return { success: true, message: 'You are already a member of this server!' };
-      }
-
-      // Step 3: Insert membership
-      const { error: joinErr } = await supabase
-        .from('server_members')
-        .insert({
-          server_id: server.id,
-          user_id: user.id,
-          role: 'member'
-        });
-
-      if (joinErr) throw joinErr;
-
-      // Step 4: Refresh servers and auto-select
+      const data = await apiRequest('/api/servers/join', {
+        method: 'POST',
+        body: JSON.stringify({ invite_code: inviteCode.trim().toUpperCase() }),
+      });
       await fetchServers();
-      setActiveServerId(server.id);
+      setActiveServerId(data.server.id);
       setActiveChannelId(null);
       setActiveChannelName(null);
       setActiveChannelType(null);
 
-      return { success: true };
+      return { success: true, message: data.message };
     } catch (err) {
       console.error('Failed to join server:', err);
       return { success: false, error: err.message };
     }
   };
 
-  // ──────────────────────────────────────────────
-  // Handlers
-  // ──────────────────────────────────────────────
   const handleSelectServer = (serverId) => {
     setActiveServerId(serverId);
     setActiveChannelId(null);
@@ -405,12 +303,74 @@ export default function DashboardPage() {
     await supabase.auth.signOut();
   };
 
+  const showToast = useCallback((message) => {
+    setToast(message);
+    window.setTimeout(() => setToast(''), 2600);
+  }, []);
+
+  const refreshActiveServerData = useCallback(async () => {
+    await Promise.all([
+      fetchServers(),
+      fetchMembers(activeServerId),
+      fetchChannels(activeServerId),
+    ]);
+  }, [activeServerId, fetchChannels, fetchMembers, fetchServers]);
+
+  const handleServerRemoved = useCallback((serverId) => {
+    setServers((prev) => prev.filter((server) => server.id !== serverId));
+    if (activeServerId === serverId) {
+      setActiveServerId(null);
+      setActiveChannelId(null);
+      setActiveChannelName(null);
+      setActiveChannelType(null);
+      leaveVoiceSession?.();
+    }
+  }, [activeServerId, leaveVoiceSession]);
+
+  useEffect(() => {
+    if (!activeServerId || !user?.id) return;
+
+    const channel = supabase
+      .channel(`server_membership_watch:${activeServerId}:${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'server_members',
+          filter: `user_id=eq.${user.id}`,
+        },
+        (payload) => {
+          if (payload.old?.server_id === activeServerId) {
+            handleServerRemoved(activeServerId);
+            showToast('You no longer have access to that server.');
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'server_members',
+          filter: `server_id=eq.${activeServerId}`,
+        },
+        () => fetchMembers(activeServerId)
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [activeServerId, fetchMembers, handleServerRemoved, showToast, user?.id]);
+
   // ──────────────────────────────────────────────
   // Derived state
   // ──────────────────────────────────────────────
   const activeServer = servers.find((s) => s.id === activeServerId);
   const activeServerName = activeServer?.name || null;
   const activeServerInviteCode = activeServer?.invite_code || null;
+  const currentRole = getCurrentMemberRole(members, user?.id);
 
   const shellClasses = [
     'dashboard-shell',
@@ -440,6 +400,8 @@ export default function DashboardPage() {
         onSelectChannel={handleSelectChannel}
         onCreateChannel={handleCreateChannel}
         voiceSession={voiceSession}
+        currentRole={currentRole}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       {activeChannelType === 'voice' ? (
         <VoicePanel
@@ -475,7 +437,23 @@ export default function DashboardPage() {
         serverInviteCode={activeServerInviteCode}
         members={members}
         membersLoading={membersLoading}
+        profile={profile}
+        currentRole={currentRole}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
+      {settingsOpen && activeServer && (
+        <ServerSettingsModal
+          server={activeServer}
+          members={members}
+          currentUserId={user?.id}
+          currentRole={currentRole}
+          onClose={() => setSettingsOpen(false)}
+          onRefresh={refreshActiveServerData}
+          onServerRemoved={handleServerRemoved}
+          notify={showToast}
+        />
+      )}
+      {toast && <div className="toast">{toast}</div>}
     </div>
   );
 }
