@@ -8,6 +8,7 @@ function VideoStream({
   stream,
   muted = false,
   mirrored = false,
+  screenContent = false,
   playRemoteMedia,
   forgetRemoteMediaElement,
 }) {
@@ -39,7 +40,11 @@ function VideoStream({
   return (
     <video
       ref={mediaRef}
-      className={mirrored ? 'voice-video-tile__video voice-video-tile__video--mirrored' : 'voice-video-tile__video'}
+      className={[
+        'voice-video-tile__video',
+        mirrored ? 'voice-video-tile__video--mirrored' : '',
+        screenContent ? 'voice-video-tile__video--screen' : '',
+      ].filter(Boolean).join(' ')}
       autoPlay
       playsInline
       muted={muted}
@@ -60,8 +65,15 @@ export default function VoicePanel({
   const [participants, setParticipants] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [screenShareViewMode, setScreenShareViewMode] = useState('focused');
+  const [focusedScreenShareUserId, setFocusedScreenShareUserId] = useState(null);
+  const [fullscreenShareUserId, setFullscreenShareUserId] = useState(null);
 
   const participantsRef = useRef(participants);
+  const previousRemoteShareIdsRef = useRef([]);
+  const screenShareFocusRef = useRef(null);
+  const screenShareTileRefsRef = useRef(new Map());
+  const fullscreenReturnToFocusUserIdRef = useRef(null);
 
   useEffect(() => {
     participantsRef.current = participants;
@@ -75,6 +87,84 @@ export default function VoicePanel({
 
   const activeParticipants = isJoinedHere ? (voiceSession.participants || []) : participants;
   const activeLoading = isJoinedHere ? voiceSession.loading : loading;
+  const remoteSharingParticipants = activeParticipants.filter((participant) => (
+    participant.user_id !== userId
+    && voiceSession.remoteScreenShareStates?.[participant.user_id]
+  ));
+  const remoteShareIdsKey = remoteSharingParticipants
+    .map((participant) => participant.user_id)
+    .join('|');
+  const focusedScreenShareParticipant = remoteSharingParticipants.find(
+    (participant) => participant.user_id === focusedScreenShareUserId
+  ) || remoteSharingParticipants[0] || null;
+  const hasFocusedScreenShare = Boolean(
+    focusedScreenShareParticipant && screenShareViewMode === 'focused'
+  );
+
+  useEffect(() => {
+    const remoteShareIds = remoteShareIdsKey ? remoteShareIdsKey.split('|') : [];
+    const previousRemoteShareIds = previousRemoteShareIdsRef.current;
+    const newlyStartedShareId = remoteShareIds.find(
+      (remoteUserId) => !previousRemoteShareIds.includes(remoteUserId)
+    );
+    const focusedShareEnded = Boolean(
+      focusedScreenShareUserId && !remoteShareIds.includes(focusedScreenShareUserId)
+    );
+    previousRemoteShareIdsRef.current = remoteShareIds;
+
+    Promise.resolve().then(() => {
+      if (
+        focusedShareEnded
+        && document.fullscreenElement === screenShareFocusRef.current
+      ) {
+        document.exitFullscreen().catch((err) => {
+          console.error('[ScreenShareUI] Failed to exit fullscreen:', err);
+        });
+      }
+
+      if (remoteShareIds.length === 0) {
+        setFocusedScreenShareUserId(null);
+        setScreenShareViewMode('focused');
+        return;
+      }
+
+      if (newlyStartedShareId) {
+        setFocusedScreenShareUserId(newlyStartedShareId);
+        setScreenShareViewMode('focused');
+        return;
+      }
+
+      setFocusedScreenShareUserId((currentUserId) => (
+        remoteShareIds.includes(currentUserId) ? currentUserId : remoteShareIds[0]
+      ));
+    });
+  }, [focusedScreenShareUserId, remoteShareIdsKey]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (document.fullscreenElement) {
+        setFullscreenShareUserId(
+          document.fullscreenElement.dataset.screenShareUserId
+          || fullscreenReturnToFocusUserIdRef.current
+          || null
+        );
+        return;
+      }
+
+      const returnToFocusUserId = fullscreenReturnToFocusUserIdRef.current;
+      setFullscreenShareUserId(null);
+      fullscreenReturnToFocusUserIdRef.current = null;
+      if (returnToFocusUserId) {
+        setFocusedScreenShareUserId(returnToFocusUserId);
+        setScreenShareViewMode('focused');
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
 
   // ---------- fetch participants for this channel ----------
   const fetchParticipants = useCallback(async () => {
@@ -212,8 +302,196 @@ export default function VoicePanel({
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const handleMinimizeScreenShare = async () => {
+    fullscreenReturnToFocusUserIdRef.current = null;
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch (err) {
+        console.error('[ScreenShareUI] Failed to exit fullscreen:', err);
+      }
+    }
+    setScreenShareViewMode('minimized');
+  };
+
+  const handleFocusScreenShare = (remoteUserId) => {
+    setFocusedScreenShareUserId(remoteUserId);
+    setScreenShareViewMode('focused');
+  };
+
+  const handleFullscreenScreenShare = (remoteUserId) => {
+    if (!document.fullscreenEnabled) {
+      console.error('[ScreenShareUI] Browser fullscreen is not available.');
+      return;
+    }
+
+    if (document.fullscreenElement) {
+      fullscreenReturnToFocusUserIdRef.current = remoteUserId;
+      document.exitFullscreen().catch((err) => {
+        console.error('[ScreenShareUI] Failed to exit fullscreen:', err);
+      });
+      return;
+    }
+
+    const fullscreenTarget = (
+      hasFocusedScreenShare
+      && focusedScreenShareParticipant?.user_id === remoteUserId
+    )
+      ? screenShareFocusRef.current
+      : screenShareTileRefsRef.current.get(remoteUserId);
+    if (!fullscreenTarget?.requestFullscreen) return;
+
+    fullscreenReturnToFocusUserIdRef.current = remoteUserId;
+    fullscreenTarget.requestFullscreen().catch((err) => {
+      fullscreenReturnToFocusUserIdRef.current = null;
+      console.error('[ScreenShareUI] Failed to enter fullscreen:', err);
+    });
+  };
+
+  const getParticipantMedia = (participant) => {
+    const isMe = participant.user_id === userId;
+    const username = participant.profiles?.username || (isMe ? profile?.username : null) || 'Unknown';
+    const isSharingScreen = isMe
+      ? voiceSession.isScreenSharing
+      : Boolean(voiceSession.remoteScreenShareStates?.[participant.user_id]);
+    const stream = isMe
+      ? (isSharingScreen ? voiceSession.localScreenStream : voiceSession.localVideoStream)
+      : voiceSession.remoteStreams?.[participant.user_id];
+    const participantCameraState = isMe
+      ? cameraEnabled
+      : voiceSession.remoteCameraStates?.[participant.user_id];
+    const hasLiveVideoTrack = Boolean(
+      stream?.getVideoTracks().some((track) => track.readyState === 'live' && !track.muted)
+    );
+
+    return {
+      isMe,
+      username,
+      isSharingScreen,
+      stream,
+      hasLiveVideo: Boolean(
+        hasLiveVideoTrack
+        && (isSharingScreen || (isMe ? participantCameraState : participantCameraState !== false))
+      ),
+    };
+  };
+
+  const renderScreenShareControls = (remoteUserId, isFocused) => (
+    <div className="screen-share-view-controls" aria-label="Screen share view controls">
+      {isFocused ? (
+        <button
+          type="button"
+          className="screen-share-view-control"
+          onClick={handleMinimizeScreenShare}
+          title="Minimize screen share"
+          aria-label="Minimize screen share"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="4 14 10 14 10 20" />
+            <polyline points="20 10 14 10 14 4" />
+            <line x1="14" y1="10" x2="21" y2="3" />
+            <line x1="3" y1="21" x2="10" y2="14" />
+          </svg>
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="screen-share-view-control"
+          onClick={() => handleFocusScreenShare(remoteUserId)}
+          title="Focus screen share"
+          aria-label="Focus screen share"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 3 21 3 21 9" />
+            <polyline points="9 21 3 21 3 15" />
+            <line x1="21" y1="3" x2="14" y2="10" />
+            <line x1="3" y1="21" x2="10" y2="14" />
+          </svg>
+        </button>
+      )}
+      <button
+        type="button"
+        className="screen-share-view-control"
+        onClick={() => handleFullscreenScreenShare(remoteUserId)}
+        title={fullscreenShareUserId === remoteUserId ? 'Screen share is fullscreen' : 'View screen share fullscreen'}
+        aria-label="View screen share fullscreen"
+        aria-pressed={fullscreenShareUserId === remoteUserId}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="8 3 3 3 3 8" />
+          <polyline points="16 3 21 3 21 8" />
+          <polyline points="8 21 3 21 3 16" />
+          <polyline points="16 21 21 21 21 16" />
+        </svg>
+      </button>
+    </div>
+  );
+
+  const renderParticipantVideoTile = (participant, { compact = false } = {}) => {
+    const media = getParticipantMedia(participant);
+    const isRemoteScreenShare = media.isSharingScreen && !media.isMe;
+
+    return (
+      <div
+        ref={(element) => {
+          if (!isRemoteScreenShare) return;
+          if (element) {
+            screenShareTileRefsRef.current.set(participant.user_id, element);
+          } else {
+            screenShareTileRefsRef.current.delete(participant.user_id);
+          }
+        }}
+        data-screen-share-user-id={isRemoteScreenShare ? participant.user_id : undefined}
+        className={[
+          'voice-video-tile',
+          compact ? 'voice-video-tile--compact' : '',
+          media.isSharingScreen ? 'voice-video-tile--screen' : '',
+        ].filter(Boolean).join(' ')}
+        key={`video-${participant.user_id}`}
+      >
+        <div className="voice-video-tile__media">
+          {media.hasLiveVideo ? (
+            <VideoStream
+              stream={media.stream}
+              muted={media.isMe}
+              mirrored={media.isMe && !media.isSharingScreen}
+              screenContent={media.isSharingScreen}
+              playRemoteMedia={voiceSession.playRemoteMedia}
+              forgetRemoteMediaElement={voiceSession.forgetRemoteMediaElement}
+            />
+          ) : (
+            <div className="voice-video-tile__placeholder">
+              <span>{media.username[0]?.toUpperCase() || '?'}</span>
+              <small>Camera off</small>
+            </div>
+          )}
+          {isRemoteScreenShare && renderScreenShareControls(participant.user_id, false)}
+        </div>
+        <div className="voice-video-tile__label">
+          <span>{media.username}{media.isMe ? ' (You)' : ''}</span>
+          <span className="voice-video-tile__status">
+            {media.isSharingScreen && <span className="voice-video-tile__sharing">Sharing screen</span>}
+            {participant.is_muted && <span className="voice-video-tile__muted">Muted</span>}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
+  const focusedShareMedia = focusedScreenShareParticipant
+    ? getParticipantMedia(focusedScreenShareParticipant)
+    : null;
+  const filmstripParticipants = focusedScreenShareParticipant
+    ? activeParticipants.filter(
+      (participant) => participant.user_id !== focusedScreenShareParticipant.user_id
+    )
+    : activeParticipants;
+
   return (
-    <div className="voice-panel" id="voice-panel">
+    <div
+      className={`voice-panel ${hasFocusedScreenShare ? 'voice-panel--share-focused' : ''}`}
+      id="voice-panel"
+    >
       <style>{`
         @keyframes voiceStatusPulse {
           0% { opacity: 0.5; }
@@ -247,20 +525,21 @@ export default function VoicePanel({
       </div>
 
       {/* Error */}
-      {(error || voiceSession.error || voiceSession.cameraError || voiceSession.autoplayWarning) && (
+      {(error || voiceSession.error || voiceSession.cameraError || voiceSession.screenShareError || voiceSession.autoplayWarning) && (
         <div className="voice-panel__error">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10" />
             <line x1="15" y1="9" x2="9" y2="15" />
             <line x1="9" y1="9" x2="15" y2="15" />
           </svg>
-          <span>{error || voiceSession.error || voiceSession.cameraError || voiceSession.autoplayWarning}</span>
+          <span>{error || voiceSession.error || voiceSession.cameraError || voiceSession.screenShareError || voiceSession.autoplayWarning}</span>
           <button
             className="voice-panel__error-dismiss"
             onClick={() => {
               setError('');
               voiceSession.setError('');
               voiceSession.setCameraError('');
+              voiceSession.setScreenShareError('');
             }}
           >
             ×
@@ -339,7 +618,7 @@ export default function VoicePanel({
             <button
               className={`voice-panel__btn voice-panel__btn--camera ${cameraEnabled ? 'voice-panel__btn--camera-on' : ''}`}
               onClick={cameraEnabled ? () => voiceSession.handleTurnCameraOff() : voiceSession.handleTurnCameraOn}
-              disabled={voiceSession.cameraBusy}
+              disabled={voiceSession.cameraBusy || voiceSession.screenShareBusy}
               title={cameraEnabled ? 'Turn Camera Off' : 'Turn Camera On'}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -359,6 +638,23 @@ export default function VoicePanel({
               {voiceSession.cameraBusy ? 'Starting Camera...' : (cameraEnabled ? 'Turn Camera Off' : 'Turn Camera On')}
             </button>
             <button
+              className={`voice-panel__btn voice-panel__btn--screen ${voiceSession.isScreenSharing ? 'voice-panel__btn--screen-on' : ''}`}
+              onClick={voiceSession.isScreenSharing
+                ? () => voiceSession.handleStopScreenShare()
+                : voiceSession.handleStartScreenShare}
+              disabled={voiceSession.screenShareBusy || voiceSession.cameraBusy}
+              title={voiceSession.isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+              {voiceSession.screenShareBusy
+                ? 'Starting Share...'
+                : (voiceSession.isScreenSharing ? 'Stop Sharing' : 'Share Screen')}
+            </button>
+            <button
               className="voice-panel__btn voice-panel__btn--leave"
               onClick={handleLeave}
             >
@@ -373,50 +669,43 @@ export default function VoicePanel({
       </div>
 
       {isJoinedHere && activeParticipants.length > 0 && (
-        <div className="voice-video-grid" aria-label="Call video">
-          {activeParticipants.map((participant) => {
-            const isMe = participant.user_id === userId;
-            const username = participant.profiles?.username || (isMe ? profile?.username : null) || 'Unknown';
-            const stream = isMe
-              ? voiceSession.localVideoStream
-              : voiceSession.remoteStreams?.[participant.user_id];
-            const participantCameraState = isMe
-              ? cameraEnabled
-              : voiceSession.remoteCameraStates?.[participant.user_id];
-            const hasLiveVideoTrack = Boolean(
-              stream?.getVideoTracks().some((track) => track.readyState === 'live' && !track.muted)
-            );
-            const hasLiveVideo = Boolean(
-              hasLiveVideoTrack
-              && (isMe ? participantCameraState : participantCameraState !== false)
-            );
-
-            return (
-              <div className="voice-video-tile" key={`video-${participant.user_id}`}>
-                <div className="voice-video-tile__media">
-                  {hasLiveVideo ? (
-                    <VideoStream
-                      stream={stream}
-                      muted={isMe}
-                      mirrored={isMe}
-                      playRemoteMedia={voiceSession.playRemoteMedia}
-                      forgetRemoteMediaElement={voiceSession.forgetRemoteMediaElement}
-                    />
-                  ) : (
-                    <div className="voice-video-tile__placeholder">
-                      <span>{username[0]?.toUpperCase() || '?'}</span>
-                      <small>Camera off</small>
-                    </div>
-                  )}
+        hasFocusedScreenShare && focusedShareMedia ? (
+          <div className="voice-call-workspace" aria-label="Focused screen share">
+            <section
+              ref={screenShareFocusRef}
+              className="screen-share-focus"
+              data-screen-share-user-id={focusedScreenShareParticipant.user_id}
+              aria-label={`${focusedShareMedia.username} is sharing their screen`}
+            >
+              <div className="screen-share-focus__media">
+                <VideoStream
+                  stream={focusedShareMedia.stream}
+                  muted={false}
+                  mirrored={false}
+                  screenContent
+                  playRemoteMedia={voiceSession.playRemoteMedia}
+                  forgetRemoteMediaElement={voiceSession.forgetRemoteMediaElement}
+                />
+                <div className="screen-share-focus__identity">
+                  <span>{focusedShareMedia.username}</span>
+                  <small>Sharing screen</small>
                 </div>
-                <div className="voice-video-tile__label">
-                  <span>{username}{isMe ? ' (You)' : ''}</span>
-                  {participant.is_muted && <span className="voice-video-tile__muted">Muted</span>}
-                </div>
+                {renderScreenShareControls(focusedScreenShareParticipant.user_id, true)}
               </div>
-            );
-          })}
-        </div>
+            </section>
+            {filmstripParticipants.length > 0 && (
+              <div className="voice-video-filmstrip" aria-label="Call participants">
+                {filmstripParticipants.map((participant) => (
+                  renderParticipantVideoTile(participant, { compact: true })
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="voice-video-grid" aria-label="Call video">
+            {activeParticipants.map((participant) => renderParticipantVideoTile(participant))}
+          </div>
+        )
       )}
 
       {/* Participants list */}

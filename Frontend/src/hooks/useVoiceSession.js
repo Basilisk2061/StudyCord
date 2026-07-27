@@ -20,24 +20,35 @@ export function useVoiceSession(userId) {
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [cameraBusy, setCameraBusy] = useState(false);
   const [cameraError, setCameraError] = useState('');
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [screenShareBusy, setScreenShareBusy] = useState(false);
+  const [screenShareError, setScreenShareError] = useState('');
   const [autoplayWarning, setAutoplayWarning] = useState('');
   const [localVideoStream, setLocalVideoStream] = useState(null);
+  const [localScreenStream, setLocalScreenStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
   const [remoteCameraStates, setRemoteCameraStates] = useState({});
+  const [remoteScreenShareStates, setRemoteScreenShareStates] = useState({});
 
   const localStreamRef = useRef(null);
   const cameraTrackRef = useRef(null);
   const cameraEnabledRef = useRef(false);
   const cameraStateUpdatedAtRef = useRef(0);
+  const screenStreamRef = useRef(null);
+  const screenTrackRef = useRef(null);
+  const screenShareStateUpdatedAtRef = useRef(0);
   const peerConnectionsRef = useRef({});
   const videoSendersRef = useRef({});
   const remoteStreamsRef = useRef({});
   const remoteCameraStateTimesRef = useRef({});
+  const remoteScreenShareStateTimesRef = useRef({});
   const makingOfferRef = useRef({});
   const negotiationPendingRef = useRef({});
   const ignoreOfferRef = useRef({});
   const settingRemoteAnswerRef = useRef({});
   const stopCameraRef = useRef(null);
+  const stopScreenShareRef = useRef(null);
+  const screenShareStoppingRef = useRef(false);
   const pendingPlaybackElementsRef = useRef(new Set());
   const playbackRetryListenerRef = useRef(null);
   const playbackRetryInProgressRef = useRef(false);
@@ -168,6 +179,21 @@ export function useVoiceSession(userId) {
 
   // ---------- local media helpers ----------
   const cleanupLocalAudio = useCallback(() => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
+      });
+      screenStreamRef.current = null;
+    }
+    screenTrackRef.current = null;
+    screenShareStoppingRef.current = false;
+    screenShareStateUpdatedAtRef.current = Date.now();
+    setIsScreenSharing(false);
+    setScreenShareBusy(false);
+    setScreenShareError('');
+    setLocalScreenStream(null);
+
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
@@ -240,6 +266,7 @@ export function useVoiceSession(userId) {
     delete videoSendersRef.current[otherUserId];
     delete remoteStreamsRef.current[otherUserId];
     delete remoteCameraStateTimesRef.current[otherUserId];
+    delete remoteScreenShareStateTimesRef.current[otherUserId];
     delete makingOfferRef.current[otherUserId];
     delete negotiationPendingRef.current[otherUserId];
     delete ignoreOfferRef.current[otherUserId];
@@ -274,6 +301,11 @@ export function useVoiceSession(userId) {
       delete next[otherUserId];
       return next;
     });
+    setRemoteScreenShareStates((prev) => {
+      const next = { ...prev };
+      delete next[otherUserId];
+      return next;
+    });
     setConnectionStatuses((prev) => {
       const next = { ...prev };
       delete next[otherUserId];
@@ -301,6 +333,8 @@ export function useVoiceSession(userId) {
       cleanupPeerConnection(otherUserId);
     });
     clearPendingMediaPlayback();
+    remoteScreenShareStateTimesRef.current = {};
+    setRemoteScreenShareStates({});
     setConnectionStatuses({});
     setCallStatus('');
   }, [cleanupPeerConnection, clearPendingMediaPlayback]);
@@ -411,18 +445,23 @@ export function useVoiceSession(userId) {
       console.warn(`[WebRTC] localStreamRef.current is empty when building connection for ${otherUserId}`);
     }
 
-    // Reserve one video sender in the initial negotiation. Camera toggles can then
-    // use replaceTrack without adding duplicate senders or causing offer glare.
-    const videoTransceiver = cameraTrackRef.current
-      ? pc.addTransceiver(cameraTrackRef.current, {
+    // Reserve one video sender in the initial negotiation. Screen share takes
+    // precedence over camera for peers that join while sharing is already active.
+    const activeVideoTrack = screenTrackRef.current || cameraTrackRef.current;
+    const activeVideoStream = screenTrackRef.current
+      ? screenStreamRef.current
+      : localStreamRef.current;
+    const videoTransceiver = activeVideoTrack
+      ? pc.addTransceiver(activeVideoTrack, {
         direction: 'sendrecv',
-        streams: localStreamRef.current ? [localStreamRef.current] : [],
+        streams: activeVideoStream ? [activeVideoStream] : [],
       })
       : pc.addTransceiver('video', { direction: 'sendrecv' });
     videoSendersRef.current[otherUserId] = videoTransceiver.sender;
     logVideoDiagnostic('peer-video-sender-prepared', otherUserId, {
       senderTrackId: videoTransceiver.sender.track?.id || null,
       cameraEnabled: cameraEnabledRef.current,
+      screenSharing: Boolean(screenTrackRef.current),
     });
 
     pc.onicecandidate = (event) => {
@@ -569,6 +608,13 @@ export function useVoiceSession(userId) {
     };
     logVideoDiagnostic('camera-state-sending', otherUserId, cameraState);
     sendSignal(otherUserId, 'camera-state', cameraState);
+
+    const screenShareState = {
+      enabled: Boolean(screenTrackRef.current),
+      updatedAt: screenShareStateUpdatedAtRef.current,
+    };
+    logVideoDiagnostic('screen-share-state-sending', otherUserId, screenShareState);
+    sendSignal(otherUserId, 'screen-share-state', screenShareState);
 
     return pc;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -802,6 +848,22 @@ export function useVoiceSession(userId) {
       } else {
         logVideoDiagnostic('camera-state-stale-ignored', sender_id, { enabled, updatedAt });
       }
+    } else if (signal_type === 'screen-share-state') {
+      const enabled = Boolean(signal_data?.enabled);
+      const updatedAt = Number(signal_data?.updatedAt) || 0;
+      const previousUpdatedAt = remoteScreenShareStateTimesRef.current[sender_id] || 0;
+      logVideoDiagnostic('screen-share-state-received', sender_id, {
+        enabled,
+        updatedAt,
+        previousUpdatedAt,
+      });
+      if (updatedAt >= previousUpdatedAt) {
+        remoteScreenShareStateTimesRef.current[sender_id] = updatedAt;
+        setRemoteScreenShareStates((prev) => ({
+          ...prev,
+          [sender_id]: enabled,
+        }));
+      }
     }
   }, [handleOffer, handleAnswer, handleIceCandidate, logVideoDiagnostic]);
 
@@ -816,6 +878,192 @@ export function useVoiceSession(userId) {
       return sendSignal(remoteUserId, 'camera-state', { enabled, updatedAt });
     }));
   }, [sendSignal, logVideoDiagnostic]);
+
+  const broadcastScreenShareState = useCallback(async (enabled) => {
+    const remoteUserIds = participantsRef.current
+      .map((participant) => participant.user_id)
+      .filter((participantUserId) => participantUserId !== currentUserIdRef.current);
+
+    const updatedAt = screenShareStateUpdatedAtRef.current;
+    await Promise.all(remoteUserIds.map((remoteUserId) => {
+      logVideoDiagnostic('screen-share-state-sending', remoteUserId, { enabled, updatedAt });
+      return sendSignal(remoteUserId, 'screen-share-state', { enabled, updatedAt });
+    }));
+  }, [sendSignal, logVideoDiagnostic]);
+
+  const handleStopScreenShare = useCallback(async ({ notifyPeers = true } = {}) => {
+    if (screenShareStoppingRef.current) return;
+    screenShareStoppingRef.current = true;
+
+    const screenStream = screenStreamRef.current;
+    const screenTrack = screenTrackRef.current;
+    const cameraTrack = cameraEnabledRef.current
+      && cameraTrackRef.current?.readyState === 'live'
+      ? cameraTrackRef.current
+      : null;
+
+    screenTrackRef.current = null;
+    screenStreamRef.current = null;
+    screenShareStateUpdatedAtRef.current = Date.now();
+    if (screenTrack) {
+      screenTrack.onended = null;
+    }
+
+    try {
+      const replacements = await Promise.allSettled(
+        Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+          const cachedSender = videoSendersRef.current[otherUserId];
+          let sender = pc.getTransceivers()
+            .find((transceiver) => (
+              transceiver.sender === cachedSender
+              || transceiver.sender.track?.kind === 'video'
+              || transceiver.receiver.track?.kind === 'video'
+            ))?.sender;
+
+          if (sender) {
+            await sender.replaceTrack(cameraTrack);
+            videoSendersRef.current[otherUserId] = sender;
+          } else if (cameraTrack) {
+            sender = pc.addTrack(cameraTrack, localStreamRef.current || new MediaStream([cameraTrack]));
+            videoSendersRef.current[otherUserId] = sender;
+            await negotiatePeer(otherUserId, 'camera-restored-after-screen-share');
+          }
+        })
+      );
+
+      if (replacements.some((result) => result.status === 'rejected')) {
+        console.error('[WebRTC] One or more peers could not restore video after screen sharing:', replacements);
+        setScreenShareError('Screen sharing stopped, but camera video could not be restored for every participant. Voice is still connected.');
+      }
+    } finally {
+      screenStream?.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
+      });
+      if (screenTrack && !screenStream?.getTracks().includes(screenTrack)) {
+        screenTrack.stop();
+      }
+
+      setLocalScreenStream(null);
+      setIsScreenSharing(false);
+      setScreenShareBusy(false);
+      try {
+        if (notifyPeers) {
+          await broadcastScreenShareState(false);
+          await broadcastCameraState(cameraEnabledRef.current);
+        }
+      } finally {
+        screenShareStoppingRef.current = false;
+      }
+    }
+  }, [broadcastCameraState, broadcastScreenShareState, negotiatePeer]);
+
+  useEffect(() => {
+    stopScreenShareRef.current = handleStopScreenShare;
+  }, [handleStopScreenShare]);
+
+  const handleStartScreenShare = useCallback(async () => {
+    if (!isJoinedRef.current || screenTrackRef.current || screenShareBusy || cameraBusy) return;
+
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setScreenShareError('Screen sharing is not supported by this browser. Voice and camera are still connected.');
+      return;
+    }
+
+    setScreenShareBusy(true);
+    setScreenShareError('');
+
+    let screenStream = null;
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+      });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      if (!screenTrack) {
+        throw new DOMException('No screen video track was returned.', 'NotFoundError');
+      }
+
+      screenStreamRef.current = screenStream;
+      screenTrackRef.current = screenTrack;
+      screenShareStateUpdatedAtRef.current = Date.now();
+      screenTrack.onended = () => {
+        stopScreenShareRef.current?.();
+      };
+
+      const replacements = await Promise.allSettled(
+        Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+          const cachedSender = videoSendersRef.current[otherUserId];
+          let sender = pc.getTransceivers()
+            .find((transceiver) => (
+              transceiver.sender === cachedSender
+              || transceiver.sender.track?.kind === 'video'
+              || transceiver.receiver.track?.kind === 'video'
+            ))?.sender;
+
+          if (sender) {
+            await sender.replaceTrack(screenTrack);
+            videoSendersRef.current[otherUserId] = sender;
+          } else {
+            sender = pc.addTrack(screenTrack, screenStream);
+            videoSendersRef.current[otherUserId] = sender;
+            await negotiatePeer(otherUserId, 'screen-share-track-added');
+          }
+        })
+      );
+
+      if (replacements.some((result) => result.status === 'rejected')) {
+        throw new Error('One or more screen-share senders could not be updated.');
+      }
+      if (screenTrack.readyState !== 'live') {
+        throw new Error('Screen capture ended before it could start.');
+      }
+
+      setLocalScreenStream(new MediaStream([screenTrack]));
+      setIsScreenSharing(true);
+      await broadcastScreenShareState(true);
+    } catch (err) {
+      console.error('[WebRTC] Screen sharing could not start:', err);
+
+      const cameraTrack = cameraEnabledRef.current
+        && cameraTrackRef.current?.readyState === 'live'
+        ? cameraTrackRef.current
+        : null;
+      await Promise.allSettled(
+        Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+          const cachedSender = videoSendersRef.current[otherUserId];
+          const sender = pc.getTransceivers()
+            .find((transceiver) => (
+              transceiver.sender === cachedSender
+              || transceiver.sender.track?.kind === 'video'
+              || transceiver.receiver.track?.kind === 'video'
+            ))?.sender;
+          if (sender) {
+            await sender.replaceTrack(cameraTrack);
+          }
+        })
+      );
+
+      screenStream?.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
+      });
+      screenStreamRef.current = null;
+      screenTrackRef.current = null;
+      screenShareStateUpdatedAtRef.current = Date.now();
+      setLocalScreenStream(null);
+      setIsScreenSharing(false);
+      await broadcastScreenShareState(false);
+
+      if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
+        setScreenShareError('Screen sharing was cancelled or denied. Voice and camera are still connected.');
+      } else {
+        setScreenShareError('Screen sharing could not start. Voice and camera are still connected.');
+      }
+    } finally {
+      setScreenShareBusy(false);
+    }
+  }, [broadcastScreenShareState, cameraBusy, negotiatePeer, screenShareBusy]);
 
   const handleTurnCameraOff = useCallback(async ({ notifyPeers = true } = {}) => {
     const track = cameraTrackRef.current;
@@ -833,7 +1081,7 @@ export function useVoiceSession(userId) {
         ))?.sender;
       if (!sender) return;
       try {
-        await sender.replaceTrack(null);
+        await sender.replaceTrack(screenTrackRef.current || null);
         videoSendersRef.current[otherUserId] = sender;
         logVideoDiagnostic('camera-track-removed', otherUserId, {
           signalingState: pc.signalingState,
@@ -866,7 +1114,7 @@ export function useVoiceSession(userId) {
   }, [handleTurnCameraOff]);
 
   const handleTurnCameraOn = useCallback(async () => {
-    if (!isJoinedRef.current || cameraTrackRef.current || cameraBusy) return;
+    if (!isJoinedRef.current || cameraTrackRef.current || cameraBusy || screenShareBusy) return;
 
     setCameraBusy(true);
     setCameraError('');
@@ -901,6 +1149,10 @@ export function useVoiceSession(userId) {
 
       const replacements = await Promise.allSettled(
         Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+          const outgoingVideoTrack = screenTrackRef.current || videoTrack;
+          const outgoingVideoStream = screenTrackRef.current
+            ? screenStreamRef.current
+            : cameraStream;
           const senders = pc.getSenders();
           const cachedSender = videoSendersRef.current[otherUserId];
           const videoTransceivers = pc.getTransceivers().filter((transceiver) => (
@@ -921,8 +1173,8 @@ export function useVoiceSession(userId) {
 
           try {
             if (sender) {
-              if (sender.track?.id !== videoTrack.id) {
-                await sender.replaceTrack(videoTrack);
+              if (sender.track?.id !== outgoingVideoTrack.id) {
+                await sender.replaceTrack(outgoingVideoTrack);
               }
               videoSendersRef.current[otherUserId] = sender;
               logVideoDiagnostic('camera-track-replaced', otherUserId, {
@@ -930,7 +1182,7 @@ export function useVoiceSession(userId) {
                 renegotiationRequested: false,
               });
             } else {
-              sender = pc.addTrack(videoTrack, cameraStream);
+              sender = pc.addTrack(outgoingVideoTrack, outgoingVideoStream);
               videoSendersRef.current[otherUserId] = sender;
               logVideoDiagnostic('camera-track-added', otherUserId, {
                 cameraTrackId: videoTrack.id,
@@ -967,7 +1219,7 @@ export function useVoiceSession(userId) {
           ))?.sender;
         if (!sender) return;
         try {
-          await sender.replaceTrack(null);
+          await sender.replaceTrack(screenTrackRef.current || null);
         } catch (replaceErr) {
           console.error('[WebRTC] Failed to roll back a camera sender:', replaceErr);
         }
@@ -993,7 +1245,7 @@ export function useVoiceSession(userId) {
     } finally {
       setCameraBusy(false);
     }
-  }, [broadcastCameraState, cameraBusy, logVideoDiagnostic, negotiatePeer]);
+  }, [broadcastCameraState, cameraBusy, logVideoDiagnostic, negotiatePeer, screenShareBusy]);
 
   const fetchParticipants = useCallback(async () => {
     if (!joinedChannelId) return;
@@ -1125,6 +1377,7 @@ export function useVoiceSession(userId) {
     if (!joinedChannelId || !userId) return;
     setError('');
 
+    await handleStopScreenShare();
     await handleTurnCameraOff();
     cleanupLocalAudio();
     cleanupAllCalls('manual-disconnect');
@@ -1480,13 +1733,21 @@ export function useVoiceSession(userId) {
     cameraBusy,
     cameraError,
     setCameraError,
+    isScreenSharing,
+    screenShareBusy,
+    screenShareError,
+    setScreenShareError,
     autoplayWarning,
     playRemoteMedia,
     forgetRemoteMediaElement,
     localVideoStream,
+    localScreenStream,
     remoteStreams,
     remoteCameraStates,
+    remoteScreenShareStates,
     handleTurnCameraOn,
     handleTurnCameraOff,
+    handleStartScreenShare,
+    handleStopScreenShare,
   };
 }
