@@ -1,4 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { supabase } from '../lib/supabase';
 import VoiceSessionBar from './VoiceSessionBar';
 import { hasServerPermission } from '../lib/permissions';
@@ -16,9 +32,144 @@ function VoiceIcon() {
   );
 }
 
+function ChannelItemContents({ channel, voiceCount = 0 }) {
+  return (
+    <>
+      {channel.type === 'voice' ? <VoiceIcon /> : <HashIcon />}
+      <span className="channel-item__name">{channel.name}</span>
+      {channel.type === 'voice' && voiceCount > 0 && (
+        <span className="channel-item__voice-count" title={`${voiceCount} connected`}>
+          {voiceCount}
+        </span>
+      )}
+    </>
+  );
+}
+
+function StaticChannelItem({ channel, activeChannelId, onSelectChannel, voiceCount }) {
+  return (
+    <button
+      className={`channel-item ${channel.type === 'voice' ? 'channel-item--voice' : ''} ${activeChannelId === channel.id ? 'channel-item--active' : ''}`}
+      onClick={() => onSelectChannel(channel.id, channel.name, channel.type)}
+    >
+      <ChannelItemContents channel={channel} voiceCount={voiceCount} />
+    </button>
+  );
+}
+
+function SortableChannelItem({
+  channel,
+  activeChannelId,
+  onSelectChannel,
+  voiceCount,
+  disabled,
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: channel.id, disabled });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.55 : 1,
+    zIndex: isDragging ? 2 : undefined,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`channel-item channel-item--sortable ${channel.type === 'voice' ? 'channel-item--voice' : ''} ${activeChannelId === channel.id ? 'channel-item--active' : ''}`}
+    >
+      <button
+        className="channel-item__select"
+        onClick={() => onSelectChannel(channel.id, channel.name, channel.type)}
+      >
+        <ChannelItemContents channel={channel} voiceCount={voiceCount} />
+      </button>
+      <button
+        type="button"
+        className="channel-item__drag-handle"
+        aria-label={`Reorder ${channel.name}`}
+        title="Drag to reorder"
+        disabled={disabled}
+        {...attributes}
+        {...listeners}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="8" cy="5" r="1.5" />
+          <circle cx="16" cy="5" r="1.5" />
+          <circle cx="8" cy="12" r="1.5" />
+          <circle cx="16" cy="12" r="1.5" />
+          <circle cx="8" cy="19" r="1.5" />
+          <circle cx="16" cy="19" r="1.5" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+function SortableChannelList({
+  channels,
+  activeChannelId,
+  onSelectChannel,
+  voiceCounts,
+  onReorderChannel,
+  reorderBusy,
+}) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const handleDragEnd = async ({ active, over }) => {
+    if (!over || active.id === over.id || reorderBusy) return;
+
+    const oldIndex = channels.findIndex((channel) => channel.id === active.id);
+    const newIndex = channels.findIndex((channel) => channel.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const reordered = arrayMove(channels, oldIndex, newIndex);
+    const movedIndex = reordered.findIndex((channel) => channel.id === active.id);
+    const beforeChannelId = reordered[movedIndex - 1]?.id || null;
+    const afterChannelId = reordered[movedIndex + 1]?.id || null;
+
+    await onReorderChannel(active.id, beforeChannelId, afterChannelId);
+  };
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext
+        items={channels.map((channel) => channel.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        {channels.map((channel) => (
+          <SortableChannelItem
+            key={channel.id}
+            channel={channel}
+            activeChannelId={activeChannelId}
+            onSelectChannel={onSelectChannel}
+            voiceCount={voiceCounts[channel.id] || 0}
+            disabled={reorderBusy}
+          />
+        ))}
+      </SortableContext>
+    </DndContext>
+  );
+}
+
 export default function ChannelSidebar({
   serverId, serverName, channels, channelsLoading, channelsError,
-  activeChannelId, onSelectChannel, onCreateChannel,
+  activeChannelId, onSelectChannel, onCreateChannel, onReorderChannel,
   voiceSession,
   currentRole,
   onOpenSettings,
@@ -28,6 +179,8 @@ export default function ChannelSidebar({
   const [newChannelType, setNewChannelType] = useState('text');
   const [creating, setCreating] = useState(false);
   const [err, setErr] = useState(null);
+  const [reorderBusy, setReorderBusy] = useState(false);
+  const [reorderError, setReorderError] = useState('');
 
   // ---------- voice participant counts per channel ----------
   const [voiceCounts, setVoiceCounts] = useState({});
@@ -99,6 +252,17 @@ export default function ChannelSidebar({
     setCreating(false);
   };
 
+  const handleReorder = async (channelId, beforeChannelId, afterChannelId) => {
+    if (!onReorderChannel || reorderBusy) return;
+    setReorderBusy(true);
+    setReorderError('');
+    const result = await onReorderChannel(channelId, beforeChannelId, afterChannelId);
+    if (!result?.success) {
+      setReorderError(result?.error || 'Channel order changed. Please try again.');
+    }
+    setReorderBusy(false);
+  };
+
   if (!serverId) {
     return (
       <aside className="channel-sidebar" id="channel-sidebar">
@@ -139,11 +303,26 @@ export default function ChannelSidebar({
               <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z" /></svg>
               <span>Text Channels</span>
             </div>
-            {textCh.map((ch) => (
-              <button key={ch.id} className={`channel-item ${activeChannelId === ch.id ? 'channel-item--active' : ''}`} onClick={() => onSelectChannel(ch.id, ch.name, ch.type)}>
-                <HashIcon /><span className="channel-item__name">{ch.name}</span>
-              </button>
-            ))}
+            {canManageChannels ? (
+              <SortableChannelList
+                channels={textCh}
+                activeChannelId={activeChannelId}
+                onSelectChannel={onSelectChannel}
+                voiceCounts={voiceCounts}
+                onReorderChannel={handleReorder}
+                reorderBusy={reorderBusy}
+              />
+            ) : (
+              textCh.map((channel) => (
+                <StaticChannelItem
+                  key={channel.id}
+                  channel={channel}
+                  activeChannelId={activeChannelId}
+                  onSelectChannel={onSelectChannel}
+                  voiceCount={0}
+                />
+              ))
+            )}
           </div>
         )}
 
@@ -153,24 +332,32 @@ export default function ChannelSidebar({
               <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z" /></svg>
               <span>Voice Channels</span>
             </div>
-            {voiceCh.map((ch) => {
-              const count = voiceCounts[ch.id] || 0;
-              return (
-                <button
-                  key={ch.id}
-                  className={`channel-item channel-item--voice ${activeChannelId === ch.id ? 'channel-item--active' : ''}`}
-                  onClick={() => onSelectChannel(ch.id, ch.name, ch.type)}
-                >
-                  <VoiceIcon />
-                  <span className="channel-item__name">{ch.name}</span>
-                  {count > 0 && (
-                    <span className="channel-item__voice-count" title={`${count} connected`}>
-                      {count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {canManageChannels ? (
+              <SortableChannelList
+                channels={voiceCh}
+                activeChannelId={activeChannelId}
+                onSelectChannel={onSelectChannel}
+                voiceCounts={voiceCounts}
+                onReorderChannel={handleReorder}
+                reorderBusy={reorderBusy}
+              />
+            ) : (
+              voiceCh.map((channel) => (
+                <StaticChannelItem
+                  key={channel.id}
+                  channel={channel}
+                  activeChannelId={activeChannelId}
+                  onSelectChannel={onSelectChannel}
+                  voiceCount={voiceCounts[channel.id] || 0}
+                />
+              ))
+            )}
+          </div>
+        )}
+
+        {reorderError && (
+          <div className="channel-reorder-error" role="status">
+            {reorderError}
           </div>
         )}
 

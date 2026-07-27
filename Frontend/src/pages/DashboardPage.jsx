@@ -11,6 +11,40 @@ import ServerSettingsModal from '../components/ServerSettingsModal';
 import { apiRequest } from '../lib/api';
 import { getCurrentMemberRole } from '../lib/permissions';
 
+function moveChannelLocally(channels, channelId, beforeChannelId, afterChannelId) {
+  const movedChannel = channels.find((channel) => channel.id === channelId);
+  if (!movedChannel) return channels;
+
+  const sameTypeChannels = channels.filter(
+    (channel) => channel.type === movedChannel.type && channel.id !== channelId
+  );
+
+  let insertionIndex = 0;
+  if (beforeChannelId) {
+    const beforeIndex = sameTypeChannels.findIndex(
+      (channel) => channel.id === beforeChannelId
+    );
+    if (beforeIndex < 0) return channels;
+    insertionIndex = beforeIndex + 1;
+  } else if (afterChannelId) {
+    const afterIndex = sameTypeChannels.findIndex(
+      (channel) => channel.id === afterChannelId
+    );
+    if (afterIndex < 0) return channels;
+    insertionIndex = afterIndex;
+  }
+
+  const reorderedGroup = [...sameTypeChannels];
+  reorderedGroup.splice(insertionIndex, 0, movedChannel);
+
+  let groupIndex = 0;
+  return channels.map((channel) => (
+    channel.type === movedChannel.type
+      ? reorderedGroup[groupIndex++]
+      : channel
+  ));
+}
+
 export default function DashboardPage() {
   const { session } = useAuth();
   const user = session?.user;
@@ -157,7 +191,10 @@ export default function DashboardPage() {
         .from('channels')
         .select('*')
         .eq('server_id', serverId)
-        .order('created_at', { ascending: true });
+        .order('type', { ascending: true })
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
 
       if (error) throw error;
       setChannels(data || []);
@@ -172,6 +209,28 @@ export default function DashboardPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchChannels(activeServerId);
+  }, [activeServerId, fetchChannels]);
+
+  useEffect(() => {
+    if (!activeServerId) return;
+
+    const channel = supabase
+      .channel(`channels_watch:${activeServerId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'channels',
+          filter: `server_id=eq.${activeServerId}`,
+        },
+        () => fetchChannels(activeServerId)
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [activeServerId, fetchChannels]);
 
   // ──────────────────────────────────────────────
@@ -262,6 +321,42 @@ export default function DashboardPage() {
       return { success: false, error: err.message };
     }
   };
+
+  const handleReorderChannel = useCallback(async (
+    channelId,
+    beforeChannelId,
+    afterChannelId
+  ) => {
+    if (!activeServerId) {
+      return { success: false, error: 'Select a server before reordering channels.' };
+    }
+
+    setChannels((currentChannels) => moveChannelLocally(
+      currentChannels,
+      channelId,
+      beforeChannelId,
+      afterChannelId
+    ));
+
+    try {
+      const { error } = await supabase.rpc('reorder_channel', {
+        p_channel_id: channelId,
+        p_before_channel_id: beforeChannelId,
+        p_after_channel_id: afterChannelId,
+      });
+
+      if (error) throw error;
+      await fetchChannels(activeServerId);
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to reorder channel:', error);
+      await fetchChannels(activeServerId);
+      return {
+        success: false,
+        error: error.message || 'Failed to reorder channel.',
+      };
+    }
+  }, [activeServerId, fetchChannels]);
 
   const handleJoinServer = async (inviteCode) => {
     if (!user || !inviteCode.trim()) return;
@@ -399,6 +494,7 @@ export default function DashboardPage() {
         activeChannelId={activeChannelId}
         onSelectChannel={handleSelectChannel}
         onCreateChannel={handleCreateChannel}
+        onReorderChannel={handleReorderChannel}
         voiceSession={voiceSession}
         currentRole={currentRole}
         onOpenSettings={() => setSettingsOpen(true)}

@@ -464,6 +464,61 @@ body {
 .channel-item__icon { flex-shrink: 0; opacity: 0.55; }
 .channel-item--active .channel-item__icon { opacity: 0.95; }
 .channel-item__name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.channel-item--sortable {
+  padding-right: 6px;
+}
+.channel-item__select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.channel-item__drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--transition), color var(--transition), background-color var(--transition);
+  touch-action: none;
+}
+.channel-item--sortable:hover .channel-item__drag-handle,
+.channel-item__drag-handle:focus-visible {
+  opacity: 0.65;
+}
+.channel-item__drag-handle:hover {
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  opacity: 1;
+}
+.channel-item__drag-handle:active {
+  cursor: grabbing;
+}
+.channel-item__drag-handle:disabled {
+  cursor: wait;
+}
+.channel-reorder-error {
+  margin: -4px 16px 10px;
+  color: var(--error-color);
+  font-size: 10px;
+  line-height: 1.4;
+}
 
 /* ===================== MAIN PANEL ===================== */
 .main-panel {
