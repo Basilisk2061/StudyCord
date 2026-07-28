@@ -554,8 +554,10 @@ export default function DashboardPage() {
         />
       )}
       <RightPanel
+        key={user?.id || 'anonymous'}
         activeServerId={activeServerId}
         serverInviteCode={activeServerInviteCode}
+        userId={user?.id}
         members={members}
         membersLoading={membersLoading}
         profile={profile}

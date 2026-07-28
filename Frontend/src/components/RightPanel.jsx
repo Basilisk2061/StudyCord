@@ -1,5 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import ChatMarkdownMessage from './ChatMarkdownMessage';
+import { apiRequest } from '../lib/api';
+import { getSessionMessages } from '../lib/ragChatHistory';
+import { matchesChatSession, persistChatTurn } from '../lib/ragChatFlow';
+import { getSessionStudyOutputs } from '../lib/ragStudyOutputs';
+import { generateAndPersistStudyOutput } from '../lib/ragStudyOutputFlow';
 
 const SUGGESTED_PROMPTS = [
   'Explain binary search trees',
@@ -30,6 +35,36 @@ function getAvatarBg(username) {
   return AVATAR_COLORS[index];
 }
 
+function formatSessionDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
+function toUiChatMessage(message) {
+  const createdAt = new Date(message.created_at);
+  return {
+    id: message.id,
+    sender: message.role === 'assistant' ? 'ai' : 'user',
+    content: message.content,
+    time: Number.isNaN(createdAt.getTime())
+      ? ''
+      : createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  };
+}
+
+function createWelcomeMessage(filename) {
+  return {
+    id: 'welcome',
+    sender: 'ai',
+    content: `Loaded **${filename}**. You can ask questions or generate study materials.`,
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  };
+}
+
 function SkeletonLoader({ lines = 5, label = 'Generating...' }) {
   const lineWidths = ['100%', '85%', '92%', '68%', '88%', '60%'];
   return (
@@ -56,6 +91,7 @@ function SkeletonLoader({ lines = 5, label = 'Generating...' }) {
 export default function RightPanel({
   activeServerId,
   serverInviteCode,
+  userId,
   members = [],
   membersLoading = false,
   profile,
@@ -66,8 +102,13 @@ export default function RightPanel({
 
   // AI Assistant States
   const [activeTab, setActiveTab] = useState('summary');
-  const [uploadedDoc, setUploadedDoc] = useState(null); // { docId, filename }
+  const [assistantMode, setAssistantMode] = useState('new');
+  const [uploadedDoc, setUploadedDoc] = useState(null); // { sessionId, docId, filename }
   const [uploadError, setUploadError] = useState('');
+  const [historySessions, setHistorySessions] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [localPersistenceWarning, setLocalPersistenceWarning] = useState('');
   
   // Loading states
   const [uploading, setUploading] = useState(false);
@@ -91,6 +132,9 @@ export default function RightPanel({
 
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
+  const activeDocumentRef = useRef(null);
+  const activeSessionRef = useRef(null);
+  const historyOpenRequestRef = useRef(0);
 
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -144,36 +188,35 @@ export default function RightPanel({
     formData.append('file', file);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/rag/upload', {
+      const data = await apiRequest('/api/rag/upload', {
         method: 'POST',
         body: formData,
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || 'Failed to upload document.');
-      }
-
-      const data = await response.json();
+      activeDocumentRef.current = data.doc_id;
+      activeSessionRef.current = {
+        userId,
+        sessionId: data.session_id,
+        documentId: data.doc_id,
+      };
       setUploadedDoc({
+        sessionId: data.session_id,
         docId: data.doc_id,
-        filename: file.name,
+        filename: data.filename,
       });
+      setAssistantMode('session');
 
       // Clear old data when a new doc is uploaded
       setSummaryData(null);
       setFlashcards([]);
       setMcqs([]);
-      setChatMessages([
-        {
-          id: 'welcome',
-          sender: 'ai',
-          content: `Loaded **${file.name}**. I can now summarize it, quiz you, or answer questions!`,
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        }
-      ]);
+      setLocalPersistenceWarning('');
+      setChatMessages([createWelcomeMessage(data.filename)]);
       setActiveTab('summary');
-      fetchSummary(data.doc_id); // Auto-summarize on upload
+      fetchSummary({
+        userId,
+        sessionId: data.session_id,
+        documentId: data.doc_id,
+      }); // Preserve the existing upload-time summary behavior.
     } catch (err) {
       console.error(err);
       setUploadError(err.message || 'Error uploading file.');
@@ -182,140 +225,358 @@ export default function RightPanel({
     }
   };
 
-  const fetchSummary = async (docId = uploadedDoc?.docId) => {
-    if (!docId || loadingSummary) return;
+  const fetchSummary = async (
+    identity = activeSessionRef.current,
+  ) => {
+    if (!identity?.documentId || loadingSummary) return;
+    const targetIdentity = { ...identity };
+    const isTargetActive = () => matchesChatSession(
+      activeSessionRef.current,
+      targetIdentity.userId,
+      targetIdentity.sessionId,
+      targetIdentity.documentId,
+    );
     setLoadingSummary(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/rag/summary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_id: docId }),
+      await generateAndPersistStudyOutput({
+        ...targetIdentity,
+        outputType: 'summary',
+        requestOutput: () => apiRequest('/api/rag/summary', {
+          method: 'POST',
+          body: JSON.stringify({ doc_id: targetIdentity.documentId }),
+        }),
+        isActive: isTargetActive,
+        onDisplay: setSummaryData,
+        onPersistenceError: (error) => {
+          console.warn('RAG summary persistence failed.', error);
+          setLocalPersistenceWarning(
+            'Study materials are available now, but this browser could not save them locally.',
+          );
+        },
+        onRequestError: (error) => {
+          console.error(error);
+          setUploadError('Failed to generate summary.');
+        },
       });
-      if (!response.ok) throw new Error('Failed to generate summary.');
-      const data = await response.json();
-      setSummaryData(data);
-    } catch (err) {
-      console.error(err);
-      setUploadError('Failed to generate summary.');
     } finally {
-      setLoadingSummary(false);
+      if (isTargetActive()) {
+        setLoadingSummary(false);
+      }
     }
   };
 
-  const fetchFlashcards = async () => {
-    if (!uploadedDoc?.docId || loadingFlashcards) return;
-    if (flashcards.length > 0) return;
+  const fetchFlashcards = async (
+    identity = activeSessionRef.current,
+  ) => {
+    if (!identity?.documentId || loadingFlashcards) return;
+    const targetIdentity = { ...identity };
+    const isTargetActive = () => matchesChatSession(
+      activeSessionRef.current,
+      targetIdentity.userId,
+      targetIdentity.sessionId,
+      targetIdentity.documentId,
+    );
     setLoadingFlashcards(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/rag/flashcards', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_id: uploadedDoc.docId }),
+      await generateAndPersistStudyOutput({
+        ...targetIdentity,
+        outputType: 'flashcards',
+        requestOutput: async () => {
+          const data = await apiRequest('/api/rag/flashcards', {
+            method: 'POST',
+            body: JSON.stringify({ doc_id: targetIdentity.documentId }),
+          });
+          return data.flashcards;
+        },
+        isActive: isTargetActive,
+        onDisplay: (content) => {
+          setFlashcards(content);
+          setCurrentFlashcardIndex(0);
+          setFlashcardFlipped(false);
+        },
+        onPersistenceError: (error) => {
+          console.warn('RAG flashcard persistence failed.', error);
+          setLocalPersistenceWarning(
+            'Study materials are available now, but this browser could not save them locally.',
+          );
+        },
+        onRequestError: (error) => {
+          console.error(error);
+          setUploadError('Failed to generate flashcards.');
+        },
       });
-      if (!response.ok) throw new Error('Failed to generate flashcards.');
-      const data = await response.json();
-      setFlashcards(data.flashcards || []);
-      setCurrentFlashcardIndex(0);
-      setFlashcardFlipped(false);
-    } catch (err) {
-      console.error(err);
-      setUploadError('Failed to generate flashcards.');
     } finally {
-      setLoadingFlashcards(false);
+      if (isTargetActive()) {
+        setLoadingFlashcards(false);
+      }
     }
   };
 
-  const fetchMcqs = async () => {
-    if (!uploadedDoc?.docId || loadingMcqs) return;
-    if (mcqs.length > 0) return;
+  const fetchMcqs = async (
+    identity = activeSessionRef.current,
+  ) => {
+    if (!identity?.documentId || loadingMcqs) return;
+    const targetIdentity = { ...identity };
+    const isTargetActive = () => matchesChatSession(
+      activeSessionRef.current,
+      targetIdentity.userId,
+      targetIdentity.sessionId,
+      targetIdentity.documentId,
+    );
     setLoadingMcqs(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/rag/mcq', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_id: uploadedDoc.docId }),
+      await generateAndPersistStudyOutput({
+        ...targetIdentity,
+        outputType: 'mcq',
+        requestOutput: async () => {
+          const data = await apiRequest('/api/rag/mcq', {
+            method: 'POST',
+            body: JSON.stringify({ doc_id: targetIdentity.documentId }),
+          });
+          return data.mcqs;
+        },
+        isActive: isTargetActive,
+        onDisplay: (content) => {
+          setMcqs(content);
+          setMcqAnswers({});
+          setMcqChecked({});
+        },
+        onPersistenceError: (error) => {
+          console.warn('RAG MCQ persistence failed.', error);
+          setLocalPersistenceWarning(
+            'Study materials are available now, but this browser could not save them locally.',
+          );
+        },
+        onRequestError: (error) => {
+          console.error(error);
+          setUploadError('Failed to generate MCQs.');
+        },
       });
-      if (!response.ok) throw new Error('Failed to generate MCQs.');
-      const data = await response.json();
-      setMcqs(data.mcqs || []);
-      setMcqAnswers({});
-      setMcqChecked({});
-    } catch (err) {
-      console.error(err);
-      setUploadError('Failed to generate MCQs.');
     } finally {
-      setLoadingMcqs(false);
+      if (isTargetActive()) {
+        setLoadingMcqs(false);
+      }
     }
   };
 
   const handleSendChat = async (e) => {
     e.preventDefault();
-    if (!chatInput.trim() || !uploadedDoc?.docId || sendingChat) return;
+    if (
+      !chatInput.trim()
+      || !uploadedDoc?.docId
+      || !uploadedDoc?.sessionId
+      || sendingChat
+    ) return;
+    const targetUserId = userId;
+    const targetSessionId = uploadedDoc.sessionId;
+    const targetDocumentId = uploadedDoc.docId;
+    const targetQuestion = chatInput.trim();
+    const isTargetActive = () => matchesChatSession(
+      activeSessionRef.current,
+      targetUserId,
+      targetSessionId,
+      targetDocumentId,
+    );
 
-    const userMessage = {
-      id: Date.now().toString(),
-      sender: 'user',
-      content: chatInput,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-
-    setChatMessages(prev => [...prev, userMessage]);
     setChatInput('');
     setSendingChat(true);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/rag/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: userMessage.content,
-          mode: 'chat',
-          doc_id: uploadedDoc.docId,
-        }),
+      await persistChatTurn({
+        userId: targetUserId,
+        sessionId: targetSessionId,
+        documentId: targetDocumentId,
+        question: targetQuestion,
+        sendQuestion: async ({ question, documentId, history }) => {
+          const data = await apiRequest('/api/rag/chat', {
+            method: 'POST',
+            body: JSON.stringify({
+              question,
+              mode: 'chat',
+              document_id: documentId,
+              history,
+            }),
+          });
+          return data.answer;
+        },
+        onUserMessage: (message) => {
+          if (!isTargetActive()) return;
+          setChatMessages(prev => [...prev, toUiChatMessage(message)]);
+        },
+        onAssistantMessage: (message) => {
+          if (!isTargetActive()) return;
+          setChatMessages(prev => [...prev, toUiChatMessage(message)]);
+        },
+        onPersistenceError: (error) => {
+          console.warn('RAG chat history persistence failed.', error);
+          if (isTargetActive()) {
+            setLocalPersistenceWarning(
+              'Chat is working, but this browser could not save its local history.',
+            );
+          }
+        },
+        onRequestError: (error) => {
+          console.error(error);
+          if (!isTargetActive()) return;
+          setChatMessages(prev => [
+            ...prev,
+            {
+              id: `${Date.now()}-error`,
+              sender: 'ai',
+              content: 'Error processing question. Please try again.',
+              time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              isError: true,
+            },
+          ]);
+        },
       });
-
-      if (!response.ok) throw new Error('Failed to get answer.');
-      const data = await response.json();
-
-      setChatMessages(prev => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          sender: 'ai',
-          content: data.answer,
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        }
-      ]);
-    } catch (err) {
-      console.error(err);
-      setChatMessages(prev => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          sender: 'ai',
-          content: 'Error processing question. Please try again.',
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          isError: true,
-        }
-      ]);
     } finally {
-      setSendingChat(false);
+      if (isTargetActive()) {
+        setSendingChat(false);
+      }
     }
   };
 
-  const resetDocument = () => {
+  const clearSessionUi = () => {
+    activeDocumentRef.current = null;
+    activeSessionRef.current = null;
     setUploadedDoc(null);
     setSummaryData(null);
     setFlashcards([]);
     setMcqs([]);
     setChatMessages([]);
+    setChatInput('');
+    setActiveTab('summary');
+    setCurrentFlashcardIndex(0);
+    setFlashcardFlipped(false);
+    setMcqAnswers({});
+    setMcqChecked({});
+    setLoadingSummary(false);
+    setLoadingFlashcards(false);
+    setLoadingMcqs(false);
+    setSendingChat(false);
+    setLocalPersistenceWarning('');
     setUploadError('');
+  };
+
+  const startNewStudy = () => {
+    historyOpenRequestRef.current += 1;
+    clearSessionUi();
+    setHistoryError('');
+    setAssistantMode('new');
+  };
+
+  const openHistory = async () => {
+    const requestId = historyOpenRequestRef.current + 1;
+    historyOpenRequestRef.current = requestId;
+    clearSessionUi();
+    setAssistantMode('history');
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const sessions = await apiRequest('/api/rag/sessions');
+      if (historyOpenRequestRef.current !== requestId) return;
+      setHistorySessions(Array.isArray(sessions) ? sessions : []);
+    } catch (err) {
+      console.error(err);
+      if (historyOpenRequestRef.current !== requestId) return;
+      setHistoryError(err.message || 'Study history could not be loaded.');
+    } finally {
+      if (historyOpenRequestRef.current === requestId) {
+        setHistoryLoading(false);
+      }
+    }
+  };
+
+  const openHistorySession = async (sessionId) => {
+    const requestId = historyOpenRequestRef.current + 1;
+    historyOpenRequestRef.current = requestId;
+    const targetUserId = userId;
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const session = await apiRequest(`/api/rag/sessions/${sessionId}`);
+      if (historyOpenRequestRef.current !== requestId) return;
+      clearSessionUi();
+      activeDocumentRef.current = session.document_id;
+      activeSessionRef.current = {
+        userId: targetUserId,
+        sessionId: session.id,
+        documentId: session.document_id,
+      };
+      setUploadedDoc({
+        sessionId: session.id,
+        docId: session.document_id,
+        filename: session.original_filename,
+      });
+      setAssistantMode('session');
+      const [messagesResult, outputsResult] = await Promise.allSettled([
+        getSessionMessages(targetUserId, session.id),
+        getSessionStudyOutputs(
+          targetUserId,
+          session.id,
+          session.document_id,
+        ),
+      ]);
+      if (
+        historyOpenRequestRef.current !== requestId
+        || !matchesChatSession(
+          activeSessionRef.current,
+          targetUserId,
+          session.id,
+          session.document_id,
+        )
+      ) return;
+
+      if (messagesResult.status === 'fulfilled') {
+        const messages = messagesResult.value;
+        setChatMessages(
+          messages.length > 0
+            ? messages.map(toUiChatMessage)
+            : [createWelcomeMessage(session.original_filename)],
+        );
+      } else {
+        console.warn(
+          'RAG chat history could not be loaded.',
+          messagesResult.reason,
+        );
+        setChatMessages([createWelcomeMessage(session.original_filename)]);
+        setLocalPersistenceWarning(
+          'This session opened, but some browser-local study data is unavailable.',
+        );
+      }
+
+      if (outputsResult.status === 'fulfilled') {
+        const outputs = outputsResult.value;
+        setSummaryData(outputs.summary);
+        setFlashcards(outputs.flashcards || []);
+        setMcqs(outputs.mcq || []);
+        setCurrentFlashcardIndex(0);
+        setFlashcardFlipped(false);
+        setMcqAnswers({});
+        setMcqChecked({});
+      } else {
+        console.warn(
+          'RAG study outputs could not be loaded.',
+          outputsResult.reason,
+        );
+        setLocalPersistenceWarning(
+          'This session opened, but some browser-local study data is unavailable.',
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      if (historyOpenRequestRef.current !== requestId) return;
+      setHistoryError(err.message || 'Study session could not be opened.');
+    } finally {
+      if (historyOpenRequestRef.current === requestId) {
+        setHistoryLoading(false);
+      }
+    }
   };
 
   const selectTab = (tab) => {
     setActiveTab(tab);
-    if (tab === 'flashcards') fetchFlashcards();
-    if (tab === 'mcq') fetchMcqs();
   };
 
   const handleSelectMcqOption = (mcqIndex, optionIndex) => {
@@ -327,6 +588,53 @@ export default function RightPanel({
     if (mcqAnswers[mcqIndex] === undefined) return;
     setMcqChecked(prev => ({ ...prev, [mcqIndex]: true }));
   };
+
+  const renderHistory = (expanded = false) => (
+    <div className={`ai-history ${expanded ? 'ai-history--expanded' : ''}`}>
+      <div className="ai-history__header">
+        <div>
+          <div className="ai-history__title">Study History</div>
+          <div className="ai-history__subtitle">Choose a previous study session.</div>
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary ai-history__back"
+          onClick={startNewStudy}
+        >
+          New Study
+        </button>
+      </div>
+
+      {historyError && <div className="error-message ai-history__error">{historyError}</div>}
+
+      {historyLoading ? (
+        <SkeletonLoader lines={4} label="Loading history..." />
+      ) : historySessions.length === 0 ? (
+        <div className="ai-history__empty">
+          No previous study sessions yet.
+        </div>
+      ) : (
+        <div className="ai-history__list">
+          {historySessions.map((session) => (
+            <button
+              type="button"
+              className="ai-history__item"
+              key={session.id}
+              onClick={() => openHistorySession(session.id)}
+            >
+              <span className="ai-history__item-main">
+                <span className="ai-history__item-title">{session.title}</span>
+                <span className="ai-history__item-type">{session.detected_type.toUpperCase()}</span>
+              </span>
+              <span className="ai-history__item-date">
+                {formatSessionDate(session.updated_at)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <aside className="right-panel" id="right-panel">
@@ -394,6 +702,114 @@ export default function RightPanel({
         .ai-sidebar-upload__text {
           font-size: 11px;
           font-weight: 500;
+        }
+        .ai-history-button {
+          width: 100%;
+          margin-top: 8px;
+          padding: 7px 10px;
+          font-size: 11px;
+        }
+        .ai-history {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          min-height: 100px;
+        }
+        .ai-history--expanded {
+          width: min(720px, 90%);
+          max-height: 70vh;
+          padding: 24px;
+          background-color: var(--bg-surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-lg);
+        }
+        .ai-history__header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        .ai-history__title {
+          color: var(--text-primary);
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+        .ai-history__subtitle {
+          color: var(--text-muted);
+          font-size: 11px;
+          line-height: 1.4;
+          margin-top: 3px;
+        }
+        .ai-history__back {
+          width: auto;
+          flex-shrink: 0;
+          padding: 5px 9px;
+          font-size: 10px;
+        }
+        .ai-history__error {
+          padding: 7px 9px;
+          font-size: 11px;
+        }
+        .ai-history__list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          overflow-y: auto;
+        }
+        .ai-history__item {
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+          padding: 10px 11px;
+          color: var(--text-primary);
+          background-color: var(--bg-surface);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-sm);
+          text-align: left;
+          cursor: pointer;
+          transition: background-color var(--transition), border-color var(--transition);
+        }
+        .ai-history--expanded .ai-history__item {
+          background-color: var(--bg-darkest);
+          padding: 13px 14px;
+        }
+        .ai-history__item:hover {
+          background-color: var(--bg-hover);
+          border-color: var(--border-subtle);
+        }
+        .ai-history__item-main {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        .ai-history__item-title {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 12px;
+          font-weight: 500;
+        }
+        .ai-history__item-type {
+          flex-shrink: 0;
+          color: var(--text-muted);
+          font-size: 9px;
+          letter-spacing: 0.05em;
+        }
+        .ai-history__item-date,
+        .ai-history__empty {
+          color: var(--text-muted);
+          font-size: 10.5px;
+        }
+        .ai-history__empty {
+          padding: 18px 12px;
+          border: 1px dashed var(--border);
+          border-radius: var(--radius-sm);
+          text-align: center;
         }
         .ai-sidebar-doc {
           display: flex;
@@ -1089,7 +1505,11 @@ export default function RightPanel({
       <div className="right-panel__section ai-assistant-wrapper">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
           <h3 className="right-panel__section-title" style={{ margin: 0 }}>
-            {uploadedDoc ? 'AI Study Assistant' : 'AI Study Helper'}
+            {assistantMode === 'history'
+              ? 'Study History'
+              : uploadedDoc
+                ? 'AI Study Assistant'
+                : 'AI Study Helper'}
           </h3>
           <button 
             className="ai-expand-btn"
@@ -1126,8 +1546,21 @@ export default function RightPanel({
             </button>
           </div>
         )}
+        {localPersistenceWarning && (
+          <div className="error-message" style={{ padding: '6px 10px', fontSize: '11px', marginBottom: '10px' }}>
+            {localPersistenceWarning}
+            <button
+              onClick={() => setLocalPersistenceWarning('')}
+              style={{ background: 'transparent', border: 'none', color: 'inherit', float: 'right', cursor: 'pointer' }}
+            >
+              Ã—
+            </button>
+          </div>
+        )}
 
-        {!uploadedDoc ? (
+        {assistantMode === 'history' ? (
+          renderHistory()
+        ) : !uploadedDoc ? (
           <>
             <p className="ai-helper__desc">
               Upload a study document to start using AI tools.
@@ -1161,6 +1594,13 @@ export default function RightPanel({
                 </>
               )}
             </div>
+            <button
+              type="button"
+              className="btn btn-secondary ai-history-button"
+              onClick={openHistory}
+            >
+              History
+            </button>
             
             {/* Suggested prompts list (Only shown if no doc is uploaded) */}
             <div className="ai-helper__prompts" style={{ marginTop: '16px' }}>
@@ -1177,13 +1617,22 @@ export default function RightPanel({
               <span className="ai-sidebar-doc__name" title={uploadedDoc.filename}>
                 {uploadedDoc.filename}
               </span>
-              <button 
-                className="btn btn-secondary" 
-                style={{ width: 'auto', padding: '3px 8px', fontSize: '9px' }}
-                onClick={resetDocument}
-              >
-                Change
-              </button>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <button
+                  className="btn btn-secondary"
+                  style={{ width: 'auto', padding: '3px 7px', fontSize: '9px' }}
+                  onClick={openHistory}
+                >
+                  History
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  style={{ width: 'auto', padding: '3px 7px', fontSize: '9px' }}
+                  onClick={startNewStudy}
+                >
+                  New
+                </button>
+              </div>
             </div>
 
             {/* Tab Navigation */}
@@ -1222,6 +1671,14 @@ export default function RightPanel({
                     <SkeletonLoader lines={5} label="Generating summary..." />
                   ) : summaryData ? (
                     <div className="ai-fade-in">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ width: 'auto', padding: '4px 9px', fontSize: '10px', marginBottom: '10px' }}
+                        onClick={() => fetchSummary()}
+                      >
+                        Regenerate
+                      </button>
                       <div className="ai-sidebar-summary__sec">
                         <div className="ai-sidebar-summary__sec-title">Executive Summary</div>
                         <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '12.5px' }}>
@@ -1311,6 +1768,14 @@ export default function RightPanel({
                     <SkeletonLoader lines={4} label="Generating flashcards..." />
                   ) : flashcards.length > 0 ? (
                     <div className="ai-fade-in">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ width: 'auto', padding: '4px 9px', fontSize: '10px', marginBottom: '10px' }}
+                        onClick={() => fetchFlashcards()}
+                      >
+                        Regenerate
+                      </button>
                       <div 
                         className={`ai-sidebar-card ${flashcardFlipped ? 'ai-sidebar-card--flipped' : ''}`}
                         onClick={() => setFlashcardFlipped(!flashcardFlipped)}
@@ -1360,7 +1825,7 @@ export default function RightPanel({
                     <button
                       className="btn btn-primary"
                       style={{ padding: '8px 16px', fontSize: '12px' }}
-                      onClick={fetchFlashcards}
+                      onClick={() => fetchFlashcards()}
                       disabled={loadingFlashcards}
                     >
                       Generate Cards
@@ -1375,6 +1840,14 @@ export default function RightPanel({
                     <SkeletonLoader lines={6} label="Generating quiz..." />
                   ) : mcqs.length > 0 ? (
                     <div className="ai-fade-in">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ width: 'auto', padding: '4px 9px', fontSize: '10px', marginBottom: '10px' }}
+                        onClick={() => fetchMcqs()}
+                      >
+                        Regenerate
+                      </button>
                       {mcqs.map((q, qIdx) => {
                         const isChecked = mcqChecked[qIdx];
                         const selectedOptIdx = mcqAnswers[qIdx];
@@ -1428,7 +1901,7 @@ export default function RightPanel({
                     <button
                       className="btn btn-primary"
                       style={{ padding: '8px 16px', fontSize: '12px' }}
-                      onClick={fetchMcqs}
+                      onClick={() => fetchMcqs()}
                       disabled={loadingMcqs}
                     >
                       Generate Quiz
@@ -1599,15 +2072,24 @@ export default function RightPanel({
               </div>
               <div className="ai-workspace-header__right" style={{ display: 'flex', alignItems: 'center' }}>
                 {uploadedDoc && (
-                  <button className="btn btn-secondary" style={{ width: 'auto', padding: '5px 12px', marginRight: '16px', fontSize: '11px' }} onClick={resetDocument}>
-                    Replace Document
-                  </button>
+                  <>
+                    <button className="btn btn-secondary" style={{ width: 'auto', padding: '5px 12px', marginRight: '8px', fontSize: '11px' }} onClick={openHistory}>
+                      History
+                    </button>
+                    <button className="btn btn-secondary" style={{ width: 'auto', padding: '5px 12px', marginRight: '16px', fontSize: '11px' }} onClick={startNewStudy}>
+                      New Study
+                    </button>
+                  </>
                 )}
                 <button className="ai-workspace-close" onClick={() => setIsExpanded(false)}>×</button>
               </div>
             </header>
             <div className="ai-workspace-body">
-              {!uploadedDoc ? (
+              {assistantMode === 'history' ? (
+                <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', background: 'var(--bg-dark)' }}>
+                  {renderHistory(true)}
+                </div>
+              ) : !uploadedDoc ? (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', background: 'var(--bg-dark)' }}>
                   <div style={{
                     display: 'flex',
@@ -1652,6 +2134,14 @@ export default function RightPanel({
                     <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '16px' }}>
                       Supported formats: .pdf, .txt, .docx
                     </span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={openHistory}
+                      style={{ width: 'auto', marginTop: '12px', padding: '7px 18px', fontSize: '12px' }}
+                    >
+                      History
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -1694,6 +2184,14 @@ export default function RightPanel({
                           </div>
                         ) : summaryData ? (
                           <div className="ai-fade-in">
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ width: 'auto', padding: '7px 16px', fontSize: '12px', marginBottom: '14px' }}
+                              onClick={() => fetchSummary()}
+                            >
+                              Regenerate Summary
+                            </button>
                             <div className="ai-summary-card" style={{ padding: '24px', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
                               <h4 className="ai-summary-card__title" style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '12px' }}>Executive Summary</h4>
                               <p className="ai-summary-card__text" style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>{summaryData.executive_summary}</p>
@@ -1782,6 +2280,14 @@ export default function RightPanel({
                           </div>
                         ) : flashcards.length > 0 ? (
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }} className="ai-fade-in">
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ width: 'auto', padding: '7px 16px', fontSize: '12px', marginBottom: '14px' }}
+                              onClick={() => fetchFlashcards()}
+                            >
+                              Regenerate Flashcards
+                            </button>
                             <div className="ai-flashcard-container" style={{ height: '320px', width: '540px' }}>
                               <div 
                                 className={`ai-flashcard ${flashcardFlipped ? 'ai-flashcard--flipped' : ''}`}
@@ -1830,7 +2336,7 @@ export default function RightPanel({
                           </div>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={fetchFlashcards} disabled={loadingFlashcards}>
+                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={() => fetchFlashcards()} disabled={loadingFlashcards}>
                               Generate Flashcards
                             </button>
                           </div>
@@ -1846,6 +2352,14 @@ export default function RightPanel({
                           </div>
                         ) : mcqs.length > 0 ? (
                           <div className="ai-fade-in">
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ width: 'auto', padding: '7px 16px', fontSize: '12px', marginBottom: '14px' }}
+                              onClick={() => fetchMcqs()}
+                            >
+                              Regenerate MCQ Quiz
+                            </button>
                             {/* Quiz Progress Indicator */}
                             <div className="ai-workspace-mcq-progress">
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px', fontWeight: '500' }}>
@@ -1916,7 +2430,7 @@ export default function RightPanel({
                           </div>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={fetchMcqs} disabled={loadingMcqs}>
+                            <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }} onClick={() => fetchMcqs()} disabled={loadingMcqs}>
                               Generate MCQ Quiz
                             </button>
                           </div>

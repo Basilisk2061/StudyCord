@@ -2,6 +2,7 @@ import os
 import time
 import hashlib
 import warnings
+from contextlib import asynccontextmanager
 # pyrefly: ignore [missing-import]
 import httpx
 # pyrefly: ignore [missing-import]
@@ -26,13 +27,30 @@ from datetime import datetime, timezone
 from fastapi import UploadFile, File, Header, Depends
 # pyrefly: ignore [missing-import]
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel
-
-# LangChain and Gemini imports (embeddings only)
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from rag1 import initialize_rag1_persistence
+from rag1.ingestion import RagIngestionError, ingest_rag_document
+from rag1.service import (
+    RagDocumentResolutionError,
+    cache_rag_document,
+    resolve_rag_document,
+)
+from rag1.conversation import (
+    RAG_CHAT_HISTORY_LIMIT,
+    RAG_CHAT_MESSAGE_MAX_CHARS,
+    RAG_CHAT_QUESTION_MAX_CHARS,
+    build_contextualization_messages,
+    build_grounded_answer_messages,
+    conversation_cache_extra,
+    usable_retrieval_query,
+)
+from rag1.sessions import (
+    RagSessionError,
+    create_study_session,
+    list_study_sessions,
+    open_study_session,
+    session_response,
+)
 
 # OpenRouter LLM import
 from langchain_openai import ChatOpenAI
@@ -71,7 +89,19 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-app = FastAPI(title="StudyCord Secure TURN API")
+@asynccontextmanager
+async def application_lifespan(application: FastAPI):
+    """Initialize Phase 17.2 local metadata storage without changing RAG behavior."""
+    persistence = initialize_rag1_persistence()
+    application.state.rag1_data_dir = persistence.data_dir
+    application.state.rag1_database_path = persistence.database_path
+    yield
+
+
+app = FastAPI(
+    title="StudyCord Secure TURN API",
+    lifespan=application_lifespan,
+)
 
 # Enable CORS for the frontend
 app.add_middleware(
@@ -906,23 +936,39 @@ async def delete_server(server_id: str, user=Depends(get_current_user)):
 # CACHING
 # =====================================================================
 
-# In-memory caches: keyed by (doc_id, cache_type[, question_hash])
+# In-memory generated-result cache, isolated by authenticated user and document.
 _generation_cache: dict[str, dict] = {}
 
 
-def _cache_key(doc_id: str, cache_type: str, extra: str = "") -> str:
+def _cache_key(
+    user_id: str,
+    doc_id: str,
+    cache_type: str,
+    extra: str = "",
+) -> str:
     """Generate a deterministic cache key."""
-    raw = f"{doc_id}:{cache_type}:{extra}"
+    raw = f"{user_id}:{doc_id}:{cache_type}:{extra}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _get_cached(doc_id: str, cache_type: str, extra: str = ""):
-    key = _cache_key(doc_id, cache_type, extra)
+def _get_cached(
+    user_id: str,
+    doc_id: str,
+    cache_type: str,
+    extra: str = "",
+):
+    key = _cache_key(user_id, doc_id, cache_type, extra)
     return _generation_cache.get(key)
 
 
-def _set_cached(doc_id: str, cache_type: str, value, extra: str = ""):
-    key = _cache_key(doc_id, cache_type, extra)
+def _set_cached(
+    user_id: str,
+    doc_id: str,
+    cache_type: str,
+    value,
+    extra: str = "",
+):
+    key = _cache_key(user_id, doc_id, cache_type, extra)
     _generation_cache[key] = value
 
 
@@ -990,46 +1036,6 @@ async def get_turn_credentials():
 # STUDYCORD BASIC RAG MVP ENDPOINTS
 # =====================================================================
 
-# In-memory store: doc_id -> { "db": FAISS, "text": str, "filename": str }
-vector_stores = {}
-
-async def extract_text_from_file(file: UploadFile) -> str:
-    filename = file.filename
-    content = await file.read()
-    ext = filename.split(".")[-1].lower()
-    
-    if ext == "txt":
-        return content.decode("utf-8", errors="ignore")
-    
-    elif ext == "pdf":
-        from pypdf import PdfReader
-        pdf_file = io.BytesIO(content)
-        reader = PdfReader(pdf_file)
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        return text
-        
-    elif ext == "docx":
-        import docx
-        docx_file = io.BytesIO(content)
-        doc = docx.Document(docx_file)
-        text = ""
-        for p in doc.paragraphs:
-            if p.text:
-                text += p.text + "\n"
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = [cell.text for cell in row.cells if cell.text]
-                if row_text:
-                    text += " | ".join(row_text) + "\n"
-        return text
-    
-    else:
-        raise ValueError(f"Unsupported file format: {ext}")
-
 def parse_json_from_response(content: str):
     # Try direct parse
     try:
@@ -1056,94 +1062,224 @@ def parse_json_from_response(content: str):
             
     raise ValueError("Response could not be parsed as valid JSON.")
 
+class ChatHistoryMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str
+    content: str = Field(
+        min_length=1,
+        max_length=RAG_CHAT_MESSAGE_MAX_CHARS,
+    )
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value: str) -> str:
+        if value not in {"user", "assistant"}:
+            raise ValueError("History role must be user or assistant.")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def trim_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("History content must not be blank.")
+        return value.strip()
+
+
 class ChatRequest(BaseModel):
-    question: str
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(
+        min_length=1,
+        max_length=RAG_CHAT_QUESTION_MAX_CHARS,
+    )
     mode: str = "chat"
-    doc_id: str
+    doc_id: str = Field(
+        validation_alias=AliasChoices("document_id", "doc_id"),
+    )
+    history: list[ChatHistoryMessage] = Field(
+        default_factory=list,
+        max_length=RAG_CHAT_HISTORY_LIMIT,
+    )
+
+    @field_validator("question")
+    @classmethod
+    def trim_question(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Question must not be blank.")
+        return value.strip()
 
 class DocRequest(BaseModel):
     doc_id: str
 
+
+def _resolve_request_document(user_id: str, document_id: str):
+    try:
+        return resolve_rag_document(user_id, document_id)
+    except RagDocumentResolutionError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.detail,
+        ) from error
+
+
 @app.post("/api/rag/upload")
-async def rag_upload(file: UploadFile = File(...)):
+async def rag_upload(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
     if not os.getenv("GOOGLE_API_KEY"):
         raise HTTPException(
             status_code=400,
             detail="GEMINI_API_KEY is not configured on the backend. Please add it to Backend/.env"
         )
-        
+
     try:
-        text = await extract_text_from_file(file)
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="The uploaded file contains no readable text.")
-            
-        # Split text into chunks
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunks = text_splitter.split_text(text)
-        
-        # Convert to Documents
-        documents = [Document(page_content=chunk, metadata={"source": file.filename}) for chunk in chunks]
-        
-        # Embeddings and FAISS — still using Gemini embeddings
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
-        db = FAISS.from_documents(documents, embeddings)
-        
-        doc_id = str(uuid.uuid4())
-        vector_stores[doc_id] = {
-            "db": db,
-            "text": text,
-            "filename": file.filename
-        }
-        
+        result = await ingest_rag_document(file, user["id"])
+        session = create_study_session(
+            user["id"],
+            result.doc_id,
+            result.filename,
+        )
+        cache_rag_document(
+            user["id"],
+            result.doc_id,
+            result.vector_store,
+            result.text,
+            result.filename,
+        )
         return {
             "status": "success",
-            "doc_id": doc_id,
-            "filename": file.filename,
-            "num_chunks": len(chunks)
+            "doc_id": result.doc_id,
+            "session_id": session.id,
+            "filename": result.filename,
+            "num_chunks": result.chunk_count,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"[RAG-UPLOAD] Error processing document: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+    except RagIngestionError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail)
+    except Exception as error:
+        print(f"[RAG-UPLOAD] Unexpected error: {type(error).__name__}")
+        raise HTTPException(status_code=500, detail="Failed to process document.")
+
+
+@app.get("/api/rag/sessions")
+async def rag_session_history(user=Depends(get_current_user)):
+    try:
+        sessions = list_study_sessions(user["id"])
+        return [session_response(session) for session in sessions]
+    except Exception as error:
+        print(f"[RAG-SESSIONS] List failed: {type(error).__name__}")
+        raise HTTPException(
+            status_code=500,
+            detail="Study history could not be loaded.",
+        ) from error
+
+
+@app.get("/api/rag/sessions/{session_id}")
+async def rag_open_session(
+    session_id: str,
+    user=Depends(get_current_user),
+):
+    try:
+        session = open_study_session(user["id"], session_id)
+        return session_response(session)
+    except RagSessionError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.detail,
+        ) from error
+    except Exception as error:
+        print(f"[RAG-SESSIONS] Open failed: {type(error).__name__}")
+        raise HTTPException(
+            status_code=500,
+            detail="Study session could not be opened.",
+        ) from error
 
 
 @app.post("/api/rag/chat")
-async def rag_chat(request: ChatRequest):
+async def rag_chat(
+    request: ChatRequest,
+    user=Depends(get_current_user),
+):
     endpoint = "RAG-CHAT"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, question='{request.question[:80]}...'")
+    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}")
     start_time = time.time()
 
-    doc_data = vector_stores.get(request.doc_id)
-    if not doc_data:
-        raise HTTPException(status_code=404, detail="Document not found or expired. Please upload it again.")
+    doc_data = _resolve_request_document(user["id"], request.doc_id)
+    cache_extra = conversation_cache_extra(
+        request.history,
+        request.question,
+    )
 
     # Check cache for repeated chat questions
-    cached = _get_cached(request.doc_id, "chat", request.question)
+    cached = _get_cached(
+        doc_data.metadata.user_id,
+        doc_data.metadata.id,
+        "chat",
+        cache_extra,
+    )
     if cached is not None:
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
         return cached
 
     try:
-        db = doc_data["db"]
-        docs = db.similarity_search(request.question, k=4)
+        retrieval_query = request.question
+        contextualization_used = False
+        contextualization_fallback = False
+        if request.history:
+            try:
+                contextualizer = get_rag_chat_model(temperature=0)
+                rewrite_response = await contextualizer.ainvoke(
+                    build_contextualization_messages(
+                        request.history,
+                        request.question,
+                    )
+                )
+                rewritten_query = usable_retrieval_query(
+                    rewrite_response.content
+                )
+                if rewritten_query is None:
+                    contextualization_fallback = True
+                else:
+                    retrieval_query = rewritten_query
+                    contextualization_used = True
+            except Exception as rewrite_error:
+                contextualization_fallback = True
+                print(
+                    f"[{endpoint}] Contextualization fallback - "
+                    f"error={type(rewrite_error).__name__}"
+                )
+
+        print(
+            f"[{endpoint}] Context - "
+            f"history_message_count={len(request.history)}, "
+            f"contextualization_used={contextualization_used}, "
+            f"fallback={contextualization_fallback}"
+        )
+
+        db = doc_data.vector_store
+        docs = db.similarity_search(retrieval_query, k=4)
         context = "\n\n".join([doc.page_content for doc in docs])
         
         chat = get_rag_chat_model(temperature=0.3)
-        prompt = (
-            f"You are an AI Study Assistant for StudyCord. Answer the student's question based strictly on the provided document context. "
-            f"If the answer cannot be found in the context, you may use your general knowledge to answer, but state clearly that it is not explicitly mentioned in the document.\n\n"
-            f"Document Context:\n{context}\n\n"
-            f"Student Question: {request.question}\n\n"
-            f"Helpful Answer:"
+        prompt = build_grounded_answer_messages(
+            context,
+            request.history,
+            request.question,
         )
         
         response = await chat.ainvoke(prompt)
         result = {"answer": response.content}
 
         # Cache the result
-        _set_cached(request.doc_id, "chat", result, request.question)
+        _set_cached(
+            doc_data.metadata.user_id,
+            doc_data.metadata.id,
+            "chat",
+            result,
+            cache_extra,
+        )
 
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
@@ -1156,24 +1292,32 @@ async def rag_chat(request: ChatRequest):
 
 
 @app.post("/api/rag/summary")
-async def rag_summary(request: DocRequest):
+async def rag_summary(
+    request: DocRequest,
+    user=Depends(get_current_user),
+):
     endpoint = "RAG-SUMMARY"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
     start_time = time.time()
 
-    doc_data = vector_stores.get(request.doc_id)
-    if not doc_data:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    doc_data = _resolve_request_document(user["id"], request.doc_id)
+    print(
+        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"doc_id={doc_data.metadata.id[:12]}..."
+    )
 
     # Check cache
-    cached = _get_cached(request.doc_id, "summary")
+    cached = _get_cached(
+        doc_data.metadata.user_id,
+        doc_data.metadata.id,
+        "summary",
+    )
     if cached is not None:
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
         return cached
 
     try:
-        text = doc_data["text"][:50000]  # truncate to stay within safe prompt length
+        text = doc_data.text[:50000]  # truncate to stay within safe prompt length
         chat = get_rag_chat_model(temperature=0.2)
         
         prompt = (
@@ -1197,7 +1341,12 @@ async def rag_summary(request: DocRequest):
         parsed_json = parse_json_from_response(response.content)
 
         # Cache the result
-        _set_cached(request.doc_id, "summary", parsed_json)
+        _set_cached(
+            doc_data.metadata.user_id,
+            doc_data.metadata.id,
+            "summary",
+            parsed_json,
+        )
 
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
@@ -1213,24 +1362,32 @@ async def rag_summary(request: DocRequest):
 
 
 @app.post("/api/rag/flashcards")
-async def rag_flashcards(request: DocRequest):
+async def rag_flashcards(
+    request: DocRequest,
+    user=Depends(get_current_user),
+):
     endpoint = "RAG-FLASHCARDS"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
     start_time = time.time()
 
-    doc_data = vector_stores.get(request.doc_id)
-    if not doc_data:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    doc_data = _resolve_request_document(user["id"], request.doc_id)
+    print(
+        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"doc_id={doc_data.metadata.id[:12]}..."
+    )
 
     # Check cache
-    cached = _get_cached(request.doc_id, "flashcards")
+    cached = _get_cached(
+        doc_data.metadata.user_id,
+        doc_data.metadata.id,
+        "flashcards",
+    )
     if cached is not None:
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
         return cached
 
     try:
-        text = doc_data["text"][:50000]
+        text = doc_data.text[:50000]
         chat = get_rag_chat_model(temperature=0.3)
         
         prompt = (
@@ -1248,7 +1405,12 @@ async def rag_flashcards(request: DocRequest):
         result = {"flashcards": parsed_json}
 
         # Cache the result
-        _set_cached(request.doc_id, "flashcards", result)
+        _set_cached(
+            doc_data.metadata.user_id,
+            doc_data.metadata.id,
+            "flashcards",
+            result,
+        )
 
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
@@ -1264,24 +1426,32 @@ async def rag_flashcards(request: DocRequest):
 
 
 @app.post("/api/rag/mcq")
-async def rag_mcq(request: DocRequest):
+async def rag_mcq(
+    request: DocRequest,
+    user=Depends(get_current_user),
+):
     endpoint = "RAG-MCQ"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
     start_time = time.time()
 
-    doc_data = vector_stores.get(request.doc_id)
-    if not doc_data:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    doc_data = _resolve_request_document(user["id"], request.doc_id)
+    print(
+        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"doc_id={doc_data.metadata.id[:12]}..."
+    )
 
     # Check cache
-    cached = _get_cached(request.doc_id, "mcq")
+    cached = _get_cached(
+        doc_data.metadata.user_id,
+        doc_data.metadata.id,
+        "mcq",
+    )
     if cached is not None:
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
         return cached
 
     try:
-        text = doc_data["text"][:50000]
+        text = doc_data.text[:50000]
         chat = get_rag_chat_model(temperature=0.3)
         
         prompt = (
@@ -1304,7 +1474,12 @@ async def rag_mcq(request: DocRequest):
         result = {"mcqs": parsed_json}
 
         # Cache the result
-        _set_cached(request.doc_id, "mcq", result)
+        _set_cached(
+            doc_data.metadata.user_id,
+            doc_data.metadata.id,
+            "mcq",
+            result,
+        )
 
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
