@@ -10,6 +10,10 @@ import {
   fetchChannelResourceMetadata,
   indexChannelResourceMetadata,
 } from '../lib/channelResourceApi';
+import {
+  deleteOwnMessage,
+  removeDeletedMessage,
+} from '../lib/lifecycleApi';
 import MessageAttachment from './MessageAttachment';
 
 // ---------- constants ----------
@@ -37,6 +41,10 @@ export default function MainPanel({
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
+  const [openMessageMenuId, setOpenMessageMenuId] = useState(null);
+  const [deleteCandidate, setDeleteCandidate] = useState(null);
+  const [deletingMessageId, setDeletingMessageId] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
   const messagesEndRef = useRef(null);
 
   // ---------- file attachment state ----------
@@ -133,6 +141,9 @@ export default function MainPanel({
       setMessages([]);
       return;
     }
+    setOpenMessageMenuId(null);
+    setDeleteCandidate(null);
+    setDeleteError('');
 
     const loadMessages = async () => {
       setMessagesLoading(true);
@@ -219,6 +230,26 @@ export default function MainPanel({
             );
             return updated;
           });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'messages',
+          filter: `channel_id=eq.${channelId}`,
+        },
+        (payload) => {
+          const deletedMessageId = payload.old?.id;
+          if (!deletedMessageId) return;
+          setMessages((current) => removeDeletedMessage(current, deletedMessageId));
+          setOpenMessageMenuId((current) => (
+            current === deletedMessageId ? null : current
+          ));
+          setDeleteCandidate((current) => (
+            current?.id === deletedMessageId ? null : current
+          ));
         }
       )
       .subscribe();
@@ -445,6 +476,25 @@ export default function MainPanel({
     setUploading(false);
   };
 
+  const handleDeleteMessage = async () => {
+    if (!deleteCandidate?.id || deletingMessageId) return;
+    const messageId = deleteCandidate.id;
+    setDeletingMessageId(messageId);
+    setDeleteError('');
+    try {
+      await deleteOwnMessage(apiRequest, messageId);
+      setMessages((current) => removeDeletedMessage(current, messageId));
+      setDeleteCandidate(null);
+      setOpenMessageMenuId(null);
+    } catch (error) {
+      setDeleteError(
+        error?.message || 'The message could not be deleted. Please try again.',
+      );
+    } finally {
+      setDeletingMessageId(null);
+    }
+  };
+
   // ---------- format timestamp ----------
   const formatTime = (dateString) => {
     const date = new Date(dateString);
@@ -530,6 +580,7 @@ export default function MainPanel({
       const username = msg.profiles?.username || 'Unknown';
       const avatarUrl = msg.profiles?.avatar_url;
       const initial = username[0]?.toUpperCase() || '?';
+      const isOwnMessage = msg.user_id === userId;
 
       items.push(
         <div className="message-row" key={msg.id} id={`message-${msg.id}`}>
@@ -552,6 +603,37 @@ export default function MainPanel({
             <div className="message-header">
               <span className="message-author">{username}</span>
               <span className="message-time">{formatTime(msg.created_at)}</span>
+              {isOwnMessage && (
+                <div className="message-actions">
+                  <button
+                    type="button"
+                    className="message-actions__trigger"
+                    aria-label="Message actions"
+                    aria-expanded={openMessageMenuId === msg.id}
+                    onClick={() => setOpenMessageMenuId((current) => (
+                      current === msg.id ? null : msg.id
+                    ))}
+                  >
+                    <span aria-hidden="true">•••</span>
+                  </button>
+                  {openMessageMenuId === msg.id && (
+                    <div className="message-actions__menu" role="menu">
+                      <button
+                        type="button"
+                        className="message-actions__delete"
+                        role="menuitem"
+                        onClick={() => {
+                          setDeleteCandidate(msg);
+                          setDeleteError('');
+                          setOpenMessageMenuId(null);
+                        }}
+                      >
+                        Delete message
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             {msg.content && (
               <div className="message-text">{msg.content}</div>
@@ -801,6 +883,53 @@ export default function MainPanel({
           </div>
         )}
       </div>
+      {deleteCandidate && (
+        <div
+          className="modal-overlay"
+          onClick={() => {
+            if (!deletingMessageId) setDeleteCandidate(null);
+          }}
+        >
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-message-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="delete-message-title" className="modal-card__title">
+              Delete message?
+            </h3>
+            <p className="modal-card__desc">
+              This cannot be undone. It permanently deletes the message and
+              its attachment. Any
+              linked server resource, chunks, and ratings used only by this
+              message are also removed. Existing private RAG 1 imports remain.
+            </p>
+            {deleteError && (
+              <div className="settings-error" role="alert">{deleteError}</div>
+            )}
+            <div className="modal-card__actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={Boolean(deletingMessageId)}
+                onClick={() => setDeleteCandidate(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary message-delete-confirm"
+                disabled={Boolean(deletingMessageId)}
+                onClick={handleDeleteMessage}
+              >
+                {deletingMessageId ? 'Deleting…' : 'Delete message'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

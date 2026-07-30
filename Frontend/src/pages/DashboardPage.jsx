@@ -12,6 +12,7 @@ import { useVoiceSession } from '../hooks/useVoiceSession';
 import ServerSettingsModal from '../components/ServerSettingsModal';
 import { apiRequest } from '../lib/api';
 import { getCurrentMemberRole } from '../lib/permissions';
+import { leaveServer } from '../lib/lifecycleApi';
 
 function moveChannelLocally(channels, channelId, beforeChannelId, afterChannelId) {
   const movedChannel = channels.find((channel) => channel.id === channelId);
@@ -517,6 +518,29 @@ export default function DashboardPage() {
     }
   }, [activeServerId, leaveVoiceSession]);
 
+  const handleLeaveServer = useCallback(async () => {
+    if (!activeServerId) {
+      return { success: false, error: 'No server is selected.' };
+    }
+    try {
+      await leaveVoiceSession?.();
+      await leaveServer(apiRequest, activeServerId);
+      handleServerRemoved(activeServerId);
+      showToast('You left the server.');
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error?.message || 'Could not leave the server. Please try again.',
+      };
+    }
+  }, [
+    activeServerId,
+    handleServerRemoved,
+    leaveVoiceSession,
+    showToast,
+  ]);
+
   useEffect(() => {
     if (!activeServerId || !user?.id) return;
 
@@ -598,6 +622,7 @@ export default function DashboardPage() {
         voiceSession={voiceSession}
         currentRole={currentRole}
         onOpenSettings={() => setSettingsOpen(true)}
+        onLeaveServer={handleLeaveServer}
         workspace={workspace}
         onOpenAdvancedSearch={handleOpenAdvancedSearch}
       />

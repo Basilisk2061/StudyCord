@@ -173,6 +173,7 @@ export default function ChannelSidebar({
   voiceSession,
   currentRole,
   onOpenSettings,
+  onLeaveServer,
   workspace,
   onOpenAdvancedSearch,
 }) {
@@ -183,6 +184,10 @@ export default function ChannelSidebar({
   const [err, setErr] = useState(null);
   const [reorderBusy, setReorderBusy] = useState(false);
   const [reorderError, setReorderError] = useState('');
+  const [serverMenuOpen, setServerMenuOpen] = useState(false);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState('');
 
   // ---------- voice participant counts per channel ----------
   const [voiceCounts, setVoiceCounts] = useState({});
@@ -265,6 +270,20 @@ export default function ChannelSidebar({
     setReorderBusy(false);
   };
 
+  const handleLeaveServer = async () => {
+    if (!onLeaveServer || leaving || currentRole === 'owner') return;
+    setLeaving(true);
+    setLeaveError('');
+    const result = await onLeaveServer();
+    if (result?.success) {
+      setLeaveConfirmOpen(false);
+      setServerMenuOpen(false);
+    } else {
+      setLeaveError(result?.error || 'Could not leave the server. Please try again.');
+    }
+    setLeaving(false);
+  };
+
   if (!serverId) {
     return (
       <aside className="channel-sidebar" id="channel-sidebar">
@@ -293,6 +312,40 @@ export default function ChannelSidebar({
             </svg>
           </button>
         )}
+        <div className="server-header-menu">
+          <button
+            type="button"
+            className="channel-settings-btn"
+            onClick={() => setServerMenuOpen((open) => !open)}
+            title="Server menu"
+            aria-label="Server menu"
+            aria-expanded={serverMenuOpen}
+          >
+            <span aria-hidden="true">•••</span>
+          </button>
+          {serverMenuOpen && (
+            <div className="server-header-menu__popover" role="menu">
+              <button
+                type="button"
+                className="server-header-menu__leave"
+                role="menuitem"
+                disabled={currentRole === 'owner'}
+                onClick={() => {
+                  setLeaveError('');
+                  setLeaveConfirmOpen(true);
+                  setServerMenuOpen(false);
+                }}
+              >
+                Leave server
+              </button>
+              {currentRole === 'owner' && (
+                <p className="server-header-menu__note">
+                  Transfer ownership or delete the server before leaving.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       <nav className="channel-sidebar__list">
         <button
@@ -436,6 +489,51 @@ export default function ChannelSidebar({
           onToggleMute={voiceSession.handleToggleMute}
           onLeave={voiceSession.handleLeave}
         />
+      )}
+      {leaveConfirmOpen && (
+        <div
+          className="modal-overlay"
+          onClick={() => {
+            if (!leaving) setLeaveConfirmOpen(false);
+          }}
+        >
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="leave-server-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="leave-server-title" className="modal-card__title">
+              Leave {serverName || 'server'}?
+            </h3>
+            <p className="modal-card__desc">
+              You will lose access to this server. Your historical messages,
+              resources, and ratings will remain.
+            </p>
+            {leaveError && (
+              <div className="settings-error" role="alert">{leaveError}</div>
+            )}
+            <div className="modal-card__actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={leaving}
+                onClick={() => setLeaveConfirmOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary server-leave-confirm"
+                disabled={leaving}
+                onClick={handleLeaveServer}
+              >
+                {leaving ? 'Leaving…' : 'Leave server'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </aside>
   );

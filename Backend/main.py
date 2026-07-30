@@ -94,6 +94,11 @@ from rag2 import (
     search_server_chunks,
     set_resource_rating,
 )
+from lifecycle import (
+    CHANNEL_FILES_BUCKET,
+    LifecycleTargetError,
+    parse_message_deletion_targets,
+)
 
 # OpenRouter LLM import
 from langchain_openai import ChatOpenAI
@@ -392,6 +397,26 @@ class SupabaseRestClient:
                 raise HTTPException(status_code=403, detail="Only the server owner can transfer ownership.")
             if "new owner must be a current server member" in response.text:
                 raise HTTPException(status_code=400, detail="New owner must be a current server member.")
+            if "message not found" in response.text:
+                raise HTTPException(status_code=404, detail="Message not found.")
+            if (
+                "only the message author may delete this message" in response.text
+                or "server owner must transfer ownership or delete the server before leaving" in response.text
+            ):
+                raise HTTPException(status_code=403, detail=(
+                    "Only the message author may delete this message."
+                    if "message author" in response.text
+                    else "Transfer ownership or delete the server before leaving."
+                ))
+            if (
+                "message and channel scope do not match" in response.text
+                or "message attachment scope does not match" in response.text
+                or "message attachment cleanup target is invalid" in response.text
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="The message cleanup metadata is inconsistent.",
+                )
             raise HTTPException(status_code=500, detail="Database function failed. Ensure the Phase 14 migration has been run.")
         return response.json() if response.text else None
 
@@ -916,6 +941,103 @@ async def update_server(server_id: str, request: ServerUpdateRequest, user=Depen
     ))[0]
     _audit("update_server", server_id, user["id"], success=True)
     return {"success": True, "server": server}
+
+
+@app.post("/api/servers/{server_id}/leave")
+async def leave_server(server_id: uuid.UUID, user=Depends(get_current_user)):
+    """Remove only the caller's non-owner membership and active voice presence."""
+    canonical_server_id = str(server_id)
+    client = user["supabase_user"]
+    role = await require_server_permission(
+        client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    server = await get_server(client, canonical_server_id)
+    if role == "owner" or server.get("owner_id") == user["id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Transfer ownership or delete the server before leaving.",
+        )
+
+    # Remove live media presence first. If cleanup fails, membership remains and
+    # the caller can safely retry instead of leaving a stale participant row.
+    try:
+        await cleanup_voice_presence(
+            supabase_admin(),
+            canonical_server_id,
+            user["id"],
+        )
+    except Exception as cleanup_error:
+        print(
+            "[LEAVE-SERVER] Voice presence cleanup failed "
+            f"server_id={canonical_server_id} user_id={user['id']} "
+            f"error={type(cleanup_error).__name__}"
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Could not leave the server safely. Please try again.",
+        ) from cleanup_error
+
+    await client.rpc("leave_server", {"p_server_id": canonical_server_id})
+    _audit("leave_server", canonical_server_id, user["id"], success=True)
+    return {"success": True, "server_id": canonical_server_id}
+
+
+@app.delete("/api/messages/{message_id}")
+async def delete_own_message(message_id: uuid.UUID, user=Depends(get_current_user)):
+    """Delete an authored message after backend-only attachment cleanup."""
+    client = user["supabase_user"]
+    canonical_message_id = str(message_id)
+
+    target_rows = await client.rpc(
+        "prepare_own_message_deletion",
+        {"p_message_id": canonical_message_id},
+    )
+    try:
+        targets = parse_message_deletion_targets(
+            target_rows,
+            expected_user_id=user["id"],
+        )
+    except LifecycleTargetError as target_error:
+        print(
+            "[MESSAGE-DELETE] Rejected unsafe cleanup metadata "
+            f"message_id={canonical_message_id}"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="The message attachment could not be cleaned up safely.",
+        ) from target_error
+
+    if targets:
+        try:
+            await supabase_admin().storage_remove(
+                CHANNEL_FILES_BUCKET,
+                [target.storage_path for target in targets],
+            )
+        except Exception as cleanup_error:
+            print(
+                "[MESSAGE-DELETE] Storage cleanup failed "
+                f"message_id={canonical_message_id} "
+                f"error={type(cleanup_error).__name__}"
+            )
+            # The database mutation has not run. The message stays visible and
+            # the operation is safe to retry.
+            raise HTTPException(
+                status_code=502,
+                detail="The attachment could not be removed. The message was not deleted.",
+            ) from cleanup_error
+
+    deleted = await client.rpc(
+        "delete_own_message",
+        {"p_message_id": canonical_message_id},
+    )
+    return {
+        "success": True,
+        "message_id": canonical_message_id,
+        "deleted": bool(deleted),
+    }
 
 
 async def update_server_icon_path(
