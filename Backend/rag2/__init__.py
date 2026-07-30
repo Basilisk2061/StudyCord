@@ -6,6 +6,7 @@ from .automatic_ingestion import (
 )
 from .access import (
     Rag2ResourceAccessError,
+    authorize_resource_for_access,
     download_resource_for_access,
     resolve_resource_for_access,
     validate_resource_for_access,
@@ -70,6 +71,7 @@ __all__ = [
     "Rag2SearchRequest",
     "Rag2SearchResponse",
     "ServerResourceSummary",
+    "authorize_resource_for_access",
     "embed_search_query",
     "candidate_chunk_limit",
     "delete_resource_rating",

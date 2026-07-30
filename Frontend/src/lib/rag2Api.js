@@ -60,6 +60,18 @@ export async function accessResourceFile(
   });
 }
 
+export async function handoffResourceToRag1(
+  request,
+  resourceId,
+  { signal } = {},
+) {
+  const safeResourceId = requireIdentifier(resourceId, 'Resource');
+  return request(`/api/rag1/imports/rag2/${safeResourceId}`, {
+    method: 'POST',
+    signal,
+  });
+}
+
 export function formatSemanticScore(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return '—';
@@ -115,6 +127,23 @@ export function resourceAccessErrorMessage(error) {
   }
   if (error?.status === 422) return 'This resource request is invalid.';
   return 'Unable to open this resource.';
+}
+
+export function rag1HandoffErrorMessage(error) {
+  if (error?.status === 401) return 'Your session expired. Sign in again to continue.';
+  if (error?.status === 403 || error?.status === 404) {
+    return 'You no longer have access to add this resource to RAG 1.';
+  }
+  if (error?.status === 409) {
+    return 'This resource is already being added. Wait a moment and retry.';
+  }
+  if (error?.status === 502) {
+    return 'RAG 1 processing is temporarily unavailable. Please retry.';
+  }
+  if (error?.status === 503) {
+    return 'The original resource is temporarily unavailable. Please retry.';
+  }
+  return 'This resource could not be added to RAG 1. Please retry.';
 }
 
 export function safeDownloadFilename(filename, detectedType = 'file') {

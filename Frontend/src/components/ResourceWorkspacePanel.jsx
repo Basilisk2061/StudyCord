@@ -14,6 +14,7 @@ export default function ResourceWorkspacePanel({
   onBack,
   backLabel,
   onRatingSummary,
+  onRag1Activated,
 }) {
   const navigate = useNavigate();
 
@@ -61,6 +62,7 @@ export default function ResourceWorkspacePanel({
           onBack={onBack}
           backLabel={backLabel}
           onRatingSummary={onRatingSummary}
+          onRag1Activated={onRag1Activated}
         />
       </div>
     </main>

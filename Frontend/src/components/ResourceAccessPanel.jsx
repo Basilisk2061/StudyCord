@@ -16,6 +16,9 @@ export default function ResourceAccessPanel({
   onClearRating,
   onBack,
   backLabel = 'Back to Advanced Search',
+  handoffPending,
+  handoffError,
+  onUseInRag1,
 }) {
   const [accessState, setAccessState] = useState({
     loading: true,
@@ -139,7 +142,19 @@ export default function ResourceAccessPanel({
               <a href={accessState.objectUrl} download={downloadName}>
                 Download original
               </a>
+              <button
+                type="button"
+                onClick={onUseInRag1}
+                disabled={handoffPending}
+              >
+                {handoffPending ? 'Adding to RAG 1...' : 'Use in RAG 1'}
+              </button>
             </div>
+            {handoffError && (
+              <p className="resource-access__handoff-error" role="alert">
+                {handoffError}
+              </p>
+            )}
           </>
         )}
       </section>

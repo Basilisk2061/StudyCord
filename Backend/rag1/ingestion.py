@@ -92,8 +92,14 @@ def _safe_display_filename(filename: str | None) -> str:
     return cleaned[:255]
 
 
-async def _read_and_validate_upload(file: UploadFile) -> ValidatedUpload:
-    display_filename = _safe_display_filename(file.filename)
+def _validate_upload_content(
+    filename: str,
+    content: bytes,
+    *,
+    supplied_mime: str = "",
+    expected_type: str | None = None,
+) -> ValidatedUpload:
+    display_filename = _safe_display_filename(filename)
     extension = (
         display_filename.rsplit(".", 1)[-1].lower()
         if "." in display_filename
@@ -105,14 +111,20 @@ async def _read_and_validate_upload(file: UploadFile) -> ValidatedUpload:
             "Unsupported file format. Upload a PDF, TXT, or DOCX document.",
         )
 
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
     if not content:
         raise RagIngestionError(400, "The uploaded file is empty.")
     if len(content) > MAX_UPLOAD_BYTES:
         raise RagIngestionError(413, "Study Helper documents must be 20 MB or smaller.")
 
-    supplied_mime = (file.content_type or "").lower()
-    if supplied_mime and supplied_mime not in ALLOWED_MIME_TYPES[extension]:
+    canonical_expected_type = (expected_type or "").strip().lower()
+    if canonical_expected_type and canonical_expected_type != extension:
+        raise RagIngestionError(
+            400,
+            "The document type does not match its filename.",
+        )
+
+    canonical_mime = supplied_mime.strip().lower()
+    if canonical_mime and canonical_mime not in ALLOWED_MIME_TYPES[extension]:
         raise RagIngestionError(
             400,
             "The uploaded file type does not match a supported document format.",
@@ -143,6 +155,15 @@ async def _read_and_validate_upload(file: UploadFile) -> ValidatedUpload:
         display_filename=display_filename,
         detected_type=extension,
         content=content,
+    )
+
+
+async def _read_and_validate_upload(file: UploadFile) -> ValidatedUpload:
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    return _validate_upload_content(
+        file.filename or "",
+        content,
+        supplied_mime=file.content_type or "",
     )
 
 
@@ -217,8 +238,8 @@ def _validate_staged_artifacts(staging_directory: Path) -> None:
             )
 
 
-async def ingest_rag_document(
-    file: UploadFile,
+async def _ingest_validated_upload(
+    upload: ValidatedUpload,
     user_id: str,
     *,
     repository: RagDocumentRepository | None = None,
@@ -235,7 +256,6 @@ async def ingest_rag_document(
     stage = "validation"
 
     try:
-        upload = await _read_and_validate_upload(file)
         created_at = _utc_now()
         stage = "metadata"
         repository.create(
@@ -340,11 +360,6 @@ async def ingest_rag_document(
             "The document could not be processed.",
         ) from error
     finally:
-        try:
-            await file.close()
-        except Exception:
-            pass
-
         if metadata_created and not completed:
             if staging_directory is not None:
                 try:
@@ -373,3 +388,45 @@ async def ingest_rag_document(
                     f"[RAG-INGEST] doc_id={doc_id} stage={stage} "
                     f"metadata_cleanup=failed error={type(cleanup_error).__name__}"
                 )
+
+
+async def ingest_rag_document_bytes(
+    content: bytes,
+    filename: str,
+    detected_type: str,
+    user_id: str,
+    *,
+    repository: RagDocumentRepository | None = None,
+) -> IngestionResult:
+    """Ingest trusted backend-owned bytes through the normal RAG 1 pipeline."""
+    upload = _validate_upload_content(
+        filename,
+        content,
+        expected_type=detected_type,
+    )
+    return await _ingest_validated_upload(
+        upload,
+        user_id,
+        repository=repository,
+    )
+
+
+async def ingest_rag_document(
+    file: UploadFile,
+    user_id: str,
+    *,
+    repository: RagDocumentRepository | None = None,
+) -> IngestionResult:
+    """Adapt a browser UploadFile to the shared RAG 1 ingestion core."""
+    try:
+        upload = await _read_and_validate_upload(file)
+        return await _ingest_validated_upload(
+            upload,
+            user_id,
+            repository=repository,
+        )
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass

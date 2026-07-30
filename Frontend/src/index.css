@@ -1126,19 +1126,35 @@ body {
   gap: 8px;
   border-top: 1px solid var(--border);
 }
-.resource-access__actions a {
+.resource-access__actions a,
+.resource-access__actions button {
   padding: 7px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-secondary);
+  font: inherit;
   font-size: 10px;
   text-decoration: none;
+  cursor: pointer;
 }
 .resource-access__actions a:hover,
-.resource-access__actions a:focus-visible {
+.resource-access__actions a:focus-visible,
+.resource-access__actions button:hover:not(:disabled),
+.resource-access__actions button:focus-visible {
   border-color: rgba(255, 255, 255, 0.35);
   color: var(--text-primary);
   outline: none;
+}
+.resource-access__actions button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.resource-access__handoff-error {
+  margin: 0;
+  padding: 0 12px 10px;
+  color: var(--danger);
+  font-size: 10px;
 }
 .resource-access__rating {
   margin-top: 12px;
@@ -1178,7 +1194,8 @@ body {
   .resource-access__text { min-height: 360px; }
   .resource-access__pdf { height: 58vh; min-height: 360px; }
   .resource-access__actions { flex-direction: column; }
-  .resource-access__actions a { text-align: center; }
+  .resource-access__actions a,
+  .resource-access__actions button { text-align: center; }
 }
 
 .message-row {

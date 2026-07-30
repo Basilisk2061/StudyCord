@@ -1,6 +1,7 @@
 """Authorized access to canonical RAG 2 resource files."""
 
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .indexing import has_safe_canonical_storage_path
@@ -119,6 +120,27 @@ def validate_resource_for_access(resource: ResourceAccessRecord) -> None:
         or resource.size_bytes > RESOURCE_ACCESS_MAX_BYTES
     ):
         raise Rag2ResourceAccessError(404, "Resource not found.")
+
+
+async def authorize_resource_for_access(
+    client,
+    resource_id: str,
+    user_id: str,
+    require_permission: Callable[
+        [Any, str, str, str],
+        Awaitable[str],
+    ],
+) -> ResourceAccessRecord:
+    """Apply the shared caller-scoped checks before trusted Storage access."""
+    resource = await resolve_resource_for_access(client, resource_id)
+    await require_permission(
+        client,
+        resource.server_id,
+        user_id,
+        "view_server",
+    )
+    validate_resource_for_access(resource)
+    return resource
 
 
 def safe_download_filename(filename: str, detected_type: str) -> str:

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 from pathlib import Path
+from typing import Literal
 
 # Load env variables from Backend/.env using absolute path
 BASE_DIR = Path(__file__).resolve().parent
@@ -30,6 +31,10 @@ from fastapi import UploadFile, File, Header, Depends, Query
 from PIL import Image, UnidentifiedImageError
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from rag1 import initialize_rag1_persistence
+from rag1.handoff import (
+    Rag1HandoffError,
+    handoff_rag2_resource_to_rag1,
+)
 from rag1.ingestion import RagIngestionError, ingest_rag_document
 from rag1.service import (
     RagDocumentResolutionError,
@@ -74,6 +79,7 @@ from rag2 import (
     Rag2SearchRequest,
     Rag2SearchResponse,
     ServerResourceSummary,
+    authorize_resource_for_access,
     delete_resource_rating,
     download_resource_for_access,
     has_safe_canonical_storage_path,
@@ -82,11 +88,9 @@ from rag2 import (
     list_server_resources,
     register_attachment_for_rag2,
     resolve_authorized_resource,
-    resolve_resource_for_access,
     search_server_resources,
     search_server_chunks,
     set_resource_rating,
-    validate_resource_for_access,
 )
 
 # OpenRouter LLM import
@@ -1232,23 +1236,12 @@ async def rag2_access_resource(
 ):
     caller_client = user["supabase_user"]
     try:
-        resource = await resolve_resource_for_access(
+        resource = await authorize_resource_for_access(
             caller_client,
             str(resource_id),
+            user["id"],
+            require_server_permission,
         )
-    except Rag2ResourceAccessError as error:
-        raise HTTPException(error.status_code, error.detail) from error
-
-    # Current membership is checked for every access, even when the caller
-    # previously received this resource in a search response.
-    await require_server_permission(
-        caller_client,
-        resource.server_id,
-        user["id"],
-        "view_server",
-    )
-    try:
-        validate_resource_for_access(resource)
     except Rag2ResourceAccessError as error:
         raise HTTPException(error.status_code, error.detail) from error
 
@@ -1610,6 +1603,15 @@ class DocRequest(BaseModel):
     doc_id: str
 
 
+class Rag1HandoffResponse(BaseModel):
+    status: str = "success"
+    doc_id: uuid.UUID
+    session_id: uuid.UUID
+    filename: str
+    detected_type: Literal["pdf", "docx", "txt"]
+    reused: bool
+
+
 def _resolve_request_document(user_id: str, document_id: str):
     try:
         return resolve_rag_document(user_id, document_id)
@@ -1657,6 +1659,35 @@ async def rag_upload(
     except Exception as error:
         print(f"[RAG-UPLOAD] Unexpected error: {type(error).__name__}")
         raise HTTPException(status_code=500, detail="Failed to process document.")
+
+
+@app.post(
+    "/api/rag1/imports/rag2/{resource_id}",
+    response_model=Rag1HandoffResponse,
+)
+async def rag1_import_rag2_resource(
+    resource_id: uuid.UUID,
+    response: Response,
+    user=Depends(get_current_user),
+):
+    try:
+        result = await handoff_rag2_resource_to_rag1(
+            caller_client=user["supabase_user"],
+            user_id=user["id"],
+            resource_id=str(resource_id),
+            require_permission=require_server_permission,
+            trusted_client_factory=supabase_admin,
+        )
+    except Rag1HandoffError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    response.status_code = 200 if result.reused else 201
+    return Rag1HandoffResponse(
+        doc_id=result.doc_id,
+        session_id=result.session_id,
+        filename=result.filename,
+        detected_type=result.detected_type,
+        reused=result.reused,
+    )
 
 
 @app.get("/api/rag/sessions")

@@ -1,4 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from 'react';
 import ChatMarkdownMessage from './ChatMarkdownMessage';
 import { apiRequest } from '../lib/api';
 import { getSessionMessages } from '../lib/ragChatHistory';
@@ -97,6 +102,7 @@ export default function RightPanel({
   profile,
   currentRole,
   onOpenSettings,
+  rag1ActivationRequest,
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -135,6 +141,7 @@ export default function RightPanel({
   const activeDocumentRef = useRef(null);
   const activeSessionRef = useRef(null);
   const historyOpenRequestRef = useRef(0);
+  const rag1ActivationHandledRef = useRef(null);
 
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -488,7 +495,13 @@ export default function RightPanel({
     }
   };
 
-  const openHistorySession = async (sessionId) => {
+  const openHistorySession = async (
+    sessionId,
+    {
+      openChat = false,
+      expandWorkspace = false,
+    } = {},
+  ) => {
     const requestId = historyOpenRequestRef.current + 1;
     historyOpenRequestRef.current = requestId;
     const targetUserId = userId;
@@ -510,6 +523,8 @@ export default function RightPanel({
         filename: session.original_filename,
       });
       setAssistantMode('session');
+      if (openChat) setActiveTab('chat');
+      if (expandWorkspace) setIsExpanded(true);
       const [messagesResult, outputsResult] = await Promise.allSettled([
         getSessionMessages(targetUserId, session.id),
         getSessionStudyOutputs(
@@ -574,6 +589,24 @@ export default function RightPanel({
       }
     }
   };
+  const activateRag1Session = useEffectEvent((sessionId) => {
+    void openHistorySession(sessionId, {
+      openChat: true,
+      expandWorkspace: true,
+    });
+  });
+
+  useEffect(() => {
+    const requestId = rag1ActivationRequest?.requestId;
+    const sessionId = rag1ActivationRequest?.session_id;
+    if (
+      !requestId
+      || !sessionId
+      || rag1ActivationHandledRef.current === requestId
+    ) return;
+    rag1ActivationHandledRef.current = requestId;
+    activateRag1Session(sessionId);
+  }, [rag1ActivationRequest]);
 
   const selectTab = (tab) => {
     setActiveTab(tab);

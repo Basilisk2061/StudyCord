@@ -83,6 +83,7 @@ export default function DashboardPage() {
   const [resourceOrigin, setResourceOrigin] = useState(null);
   const [channelResource, setChannelResource] = useState(null);
   const [channelRatingOverrides, setChannelRatingOverrides] = useState({});
+  const [rag1ActivationRequest, setRag1ActivationRequest] = useState(null);
 
   // ---------- layout ----------
   const [channelSidebarOpen, setChannelSidebarOpen] = useState(true);
@@ -477,6 +478,13 @@ export default function DashboardPage() {
     setChannelResource(null);
   };
 
+  const handleRag1Activated = (activation) => {
+    setRag1ActivationRequest({
+      ...activation,
+      requestId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    });
+  };
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
   };
@@ -610,6 +618,7 @@ export default function DashboardPage() {
             setWorkspace('advanced-search');
             setResourceOrigin(null);
           }}
+          onRag1Activated={handleRag1Activated}
         />
       ) : activeChannelType === 'voice' ? (
         <VoicePanel
@@ -638,6 +647,7 @@ export default function DashboardPage() {
               onBack={handleBackToChannel}
               backLabel={`Back to #${activeChannelName || 'channel'}`}
               onRatingSummary={handleChannelRatingSummary}
+              onRag1Activated={handleRag1Activated}
             />
           )}
           <div key="channel-main-panel" className={[
@@ -676,6 +686,7 @@ export default function DashboardPage() {
         profile={profile}
         currentRole={currentRole}
         onOpenSettings={() => setSettingsOpen(true)}
+        rag1ActivationRequest={rag1ActivationRequest}
       />
       {settingsOpen && activeServer && (
         <ServerSettingsModal

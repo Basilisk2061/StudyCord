@@ -23,6 +23,7 @@ export default function AdvancedSearchPanel({
   workspace,
   onOpenResource,
   onBackToSearch,
+  onRag1Activated,
 }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
@@ -110,6 +111,7 @@ export default function AdvancedSearchPanel({
             summary,
           ));
         }}
+        onRag1Activated={onRag1Activated}
       />
     );
   }
