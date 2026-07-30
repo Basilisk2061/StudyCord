@@ -5,6 +5,7 @@ import ServerSidebar from '../components/ServerSidebar';
 import ChannelSidebar from '../components/ChannelSidebar';
 import MainPanel from '../components/MainPanel';
 import AdvancedSearchPanel from '../components/AdvancedSearchPanel';
+import ResourceWorkspacePanel from '../components/ResourceWorkspacePanel';
 import VoicePanel from '../components/VoicePanel';
 import RightPanel from '../components/RightPanel';
 import { useVoiceSession } from '../hooks/useVoiceSession';
@@ -79,6 +80,9 @@ export default function DashboardPage() {
   const [activeChannelName, setActiveChannelName] = useState(null);
   const [activeChannelType, setActiveChannelType] = useState(null);
   const [workspace, setWorkspace] = useState('channel');
+  const [resourceOrigin, setResourceOrigin] = useState(null);
+  const [channelResource, setChannelResource] = useState(null);
+  const [channelRatingOverrides, setChannelRatingOverrides] = useState({});
 
   // ---------- layout ----------
   const [channelSidebarOpen, setChannelSidebarOpen] = useState(true);
@@ -414,6 +418,9 @@ export default function DashboardPage() {
     setActiveChannelName(null);
     setActiveChannelType(null);
     setWorkspace('channel');
+    setResourceOrigin(null);
+    setChannelResource(null);
+    setChannelRatingOverrides({});
     setMobilePanelView('sidebar');
   };
 
@@ -422,17 +429,52 @@ export default function DashboardPage() {
     setActiveChannelName(channelName);
     setActiveChannelType(channelType);
     setWorkspace('channel');
+    setResourceOrigin(null);
+    setChannelResource(null);
     setMobilePanelView('chat');
   };
 
   const handleOpenAdvancedSearch = () => {
     setWorkspace('advanced-search');
+    setResourceOrigin(null);
+    setChannelResource(null);
     setMobilePanelView('chat');
   };
 
   const handleOpenResource = () => {
     setWorkspace('resource');
+    setResourceOrigin('advanced-search');
     setMobilePanelView('chat');
+  };
+
+  const handleOpenChannelResource = (resource) => {
+    setChannelResource(resource);
+    setResourceOrigin('channel');
+    setWorkspace('resource');
+    setMobilePanelView('chat');
+  };
+
+  const handleChannelRatingSummary = (summary) => {
+    const rating = {
+      average_rating: summary.average_rating,
+      rating_count: summary.rating_count,
+      current_user_rating: summary.current_user_rating,
+    };
+    setChannelResource((current) => (
+      current?.resource_id === summary.resource_id
+        ? { ...current, ...rating }
+        : current
+    ));
+    setChannelRatingOverrides((current) => ({
+      ...current,
+      [summary.resource_id]: rating,
+    }));
+  };
+
+  const handleBackToChannel = () => {
+    setWorkspace('channel');
+    setResourceOrigin(null);
+    setChannelResource(null);
   };
 
   const handleLogout = async () => {
@@ -460,6 +502,9 @@ export default function DashboardPage() {
       setActiveChannelName(null);
       setActiveChannelType(null);
       setWorkspace('channel');
+      setResourceOrigin(null);
+      setChannelResource(null);
+      setChannelRatingOverrides({});
       leaveVoiceSession?.();
     }
   }, [activeServerId, leaveVoiceSession]);
@@ -508,6 +553,11 @@ export default function DashboardPage() {
   const activeServerName = activeServer?.name || null;
   const activeServerInviteCode = activeServer?.invite_code || null;
   const currentRole = getCurrentMemberRole(members, user?.id);
+  const advancedSearchVisible = workspace === 'advanced-search'
+    || (workspace === 'resource' && resourceOrigin === 'advanced-search');
+  const channelResourceVisible = workspace === 'resource'
+    && resourceOrigin === 'channel'
+    && channelResource;
 
   const shellClasses = [
     'dashboard-shell',
@@ -543,7 +593,7 @@ export default function DashboardPage() {
         workspace={workspace}
         onOpenAdvancedSearch={handleOpenAdvancedSearch}
       />
-      {workspace === 'advanced-search' || workspace === 'resource' ? (
+      {advancedSearchVisible ? (
         <AdvancedSearchPanel
           key={activeServerId}
           serverId={activeServerId}
@@ -556,7 +606,10 @@ export default function DashboardPage() {
           onMobileBack={() => setMobilePanelView('sidebar')}
           workspace={workspace}
           onOpenResource={handleOpenResource}
-          onBackToSearch={() => setWorkspace('advanced-search')}
+          onBackToSearch={() => {
+            setWorkspace('advanced-search');
+            setResourceOrigin(null);
+          }}
         />
       ) : activeChannelType === 'voice' ? (
         <VoicePanel
@@ -570,22 +623,48 @@ export default function DashboardPage() {
           voiceSession={voiceSession}
         />
       ) : (
-        <MainPanel
-          serverName={activeServerName}
-          channelName={activeChannelName}
-          channelType={activeChannelType}
-          channelId={activeChannelId}
-          userEmail={user?.email}
-          profile={profile}
-          onLogout={handleLogout}
-          channelSidebarOpen={channelSidebarOpen}
-          onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
-          onMobileBack={() => setMobilePanelView('sidebar')}
-          serversCount={servers.length}
-          channelsCount={channels.length}
-          activeServerId={activeServerId}
-          userId={user?.id}
-        />
+        <>
+          {channelResourceVisible && (
+            <ResourceWorkspacePanel
+              key="channel-resource-workspace"
+              resource={channelResource}
+              serverName={activeServerName}
+              userEmail={user?.email}
+              profile={profile}
+              onLogout={handleLogout}
+              channelSidebarOpen={channelSidebarOpen}
+              onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
+              onMobileBack={() => setMobilePanelView('sidebar')}
+              onBack={handleBackToChannel}
+              backLabel={`Back to #${activeChannelName || 'channel'}`}
+              onRatingSummary={handleChannelRatingSummary}
+            />
+          )}
+          <div key="channel-main-panel" className={[
+            'dashboard-preserved-channel',
+            channelResourceVisible ? 'dashboard-preserved-channel--hidden' : '',
+          ].filter(Boolean).join(' ')}
+          >
+            <MainPanel
+              serverName={activeServerName}
+              channelName={activeChannelName}
+              channelType={activeChannelType}
+              channelId={activeChannelId}
+              userEmail={user?.email}
+              profile={profile}
+              onLogout={handleLogout}
+              channelSidebarOpen={channelSidebarOpen}
+              onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
+              onMobileBack={() => setMobilePanelView('sidebar')}
+              serversCount={servers.length}
+              channelsCount={channels.length}
+              activeServerId={activeServerId}
+              userId={user?.id}
+              onOpenResource={handleOpenChannelResource}
+              resourceRatingOverrides={channelRatingOverrides}
+            />
+          </div>
+        </>
       )}
       <RightPanel
         key={user?.id || 'anonymous'}

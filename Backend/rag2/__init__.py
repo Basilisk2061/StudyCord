@@ -10,6 +10,10 @@ from .access import (
     resolve_resource_for_access,
     validate_resource_for_access,
 )
+from .channel_resources import (
+    Rag2ChannelResourceError,
+    get_channel_resource_metadata,
+)
 from .embeddings import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embed_search_query
 from .indexing import (
     Rag2IndexingError,
@@ -29,6 +33,8 @@ from .ratings import (
     set_resource_rating,
 )
 from .schemas import (
+    ChannelResourceCardMetadata,
+    ChannelResourceMetadataRequest,
     Rag2ChunkHit,
     Rag2AutomaticIngestionResponse,
     Rag2IndexingResponse,
@@ -45,8 +51,11 @@ from .search import Rag2SearchError, search_server_chunks
 __all__ = [
     "EMBEDDING_DIMENSIONS",
     "EMBEDDING_MODEL",
+    "ChannelResourceCardMetadata",
+    "ChannelResourceMetadataRequest",
     "Rag2AutomaticIngestionError",
     "Rag2AutomaticIngestionResponse",
+    "Rag2ChannelResourceError",
     "Rag2ResourceAccessError",
     "Rag2IndexingError",
     "Rag2IndexingResponse",
@@ -66,6 +75,7 @@ __all__ = [
     "delete_resource_rating",
     "download_resource_for_access",
     "has_safe_canonical_storage_path",
+    "get_channel_resource_metadata",
     "index_authorized_resource",
     "list_server_resources",
     "register_attachment_for_rag2",

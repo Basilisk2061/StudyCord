@@ -15,6 +15,7 @@ export default function ResourceAccessPanel({
   onRate,
   onClearRating,
   onBack,
+  backLabel = 'Back to Advanced Search',
 }) {
   const [accessState, setAccessState] = useState({
     loading: true,
@@ -78,7 +79,7 @@ export default function ResourceAccessPanel({
     <div className="resource-access">
       <button type="button" className="resource-access__back" onClick={onBack}>
         <span aria-hidden="true">←</span>
-        Back to Advanced Search
+        {backLabel}
       </button>
 
       <header className="resource-access__header">
@@ -106,7 +107,7 @@ export default function ResourceAccessPanel({
         {!accessState.loading && accessState.error && (
           <div className="resource-access__state resource-access__state--error" role="alert">
             <p>{accessState.error}</p>
-            <button type="button" onClick={onBack}>Return to search</button>
+            <button type="button" onClick={onBack}>{backLabel}</button>
           </div>
         )}
 

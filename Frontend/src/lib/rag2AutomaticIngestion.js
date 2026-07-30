@@ -18,7 +18,12 @@ export async function triggerAutomaticRag2Ingestion(request, attachmentId) {
 export function startAutomaticRag2Ingestion(
   request,
   attachmentId,
-  { onFailure = () => {} } = {},
+  {
+    onSuccess = () => {},
+    onFailure = () => {},
+  } = {},
 ) {
-  void triggerAutomaticRag2Ingestion(request, attachmentId).catch(onFailure);
+  void triggerAutomaticRag2Ingestion(request, attachmentId)
+    .then(onSuccess)
+    .catch(onFailure);
 }

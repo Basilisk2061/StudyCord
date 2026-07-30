@@ -3,16 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { apiRequest } from '../lib/api';
 import {
   createServerRequestGuard,
-  deleteResourceRating,
   isBestMatchResult,
-  putResourceRating,
-  ratingErrorMessage,
   replaceRatingSummary,
   searchErrorMessage,
   searchServerResources,
 } from '../lib/rag2Api';
-import ResourceAccessPanel from './ResourceAccessPanel';
 import ResourceSearchCard from './ResourceSearchCard';
+import ResourceWorkspacePanel from './ResourceWorkspacePanel';
 
 export default function AdvancedSearchPanel({
   serverId,
@@ -33,22 +30,16 @@ export default function AdvancedSearchPanel({
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [searchError, setSearchError] = useState('');
-  const [ratingPending, setRatingPending] = useState({});
-  const [ratingErrors, setRatingErrors] = useState({});
   const [openedResourceId, setOpenedResourceId] = useState(null);
   const searchControllerRef = useRef(null);
-  const ratingControllersRef = useRef(new Map());
   const requestGuardRef = useRef(createServerRequestGuard(serverId));
 
   useEffect(() => {
     const requestGuard = requestGuardRef.current;
-    const ratingControllers = ratingControllersRef.current;
     requestGuard.switchServer(serverId);
     return () => {
       requestGuard.invalidate();
       searchControllerRef.current?.abort();
-      ratingControllers.forEach((controller) => controller.abort());
-      ratingControllers.clear();
     };
   }, [serverId]);
 
@@ -66,11 +57,6 @@ export default function AdvancedSearchPanel({
     setHasSearched(true);
     setSearchError('');
     setResults([]);
-    ratingControllersRef.current.forEach((ratingController) => ratingController.abort());
-    ratingControllersRef.current.clear();
-    setRatingPending({});
-    setRatingErrors({});
-
     try {
       const response = await searchServerResources(
         apiRequest,
@@ -95,41 +81,6 @@ export default function AdvancedSearchPanel({
     }
   };
 
-  const mutateRating = async (resourceId, rating) => {
-    if (ratingPending[resourceId]) return;
-    const controller = new AbortController();
-    ratingControllersRef.current.get(resourceId)?.abort();
-    ratingControllersRef.current.set(resourceId, controller);
-    const token = requestGuardRef.current.capture();
-
-    setRatingPending((current) => ({ ...current, [resourceId]: true }));
-    setRatingErrors((current) => ({ ...current, [resourceId]: '' }));
-
-    try {
-      const summary = rating == null
-        ? await deleteResourceRating(apiRequest, resourceId, { signal: controller.signal })
-        : await putResourceRating(apiRequest, resourceId, rating, { signal: controller.signal });
-      if (requestGuardRef.current.isCurrent(token, serverId)) {
-        setResults((current) => replaceRatingSummary(current, resourceId, summary));
-      }
-    } catch (error) {
-      if (
-        error?.name !== 'AbortError'
-        && requestGuardRef.current.isCurrent(token, serverId)
-      ) {
-        setRatingErrors((current) => ({
-          ...current,
-          [resourceId]: ratingErrorMessage(error),
-        }));
-      }
-    } finally {
-      ratingControllersRef.current.delete(resourceId);
-      if (requestGuardRef.current.isCurrent(token, serverId)) {
-        setRatingPending((current) => ({ ...current, [resourceId]: false }));
-      }
-    }
-  };
-
   const handleOpenResource = (resourceId) => {
     setOpenedResourceId(resourceId);
     onOpenResource();
@@ -138,6 +89,30 @@ export default function AdvancedSearchPanel({
   const openedResource = results.find(
     (resource) => resource.resource_id === openedResourceId,
   );
+
+  if (workspace === 'resource' && openedResource) {
+    return (
+      <ResourceWorkspacePanel
+        resource={openedResource}
+        serverName={serverName}
+        profile={profile}
+        userEmail={userEmail}
+        onLogout={onLogout}
+        channelSidebarOpen={channelSidebarOpen}
+        onToggleChannelSidebar={onToggleChannelSidebar}
+        onMobileBack={onMobileBack}
+        onBack={onBackToSearch}
+        backLabel="Back to Advanced Search"
+        onRatingSummary={(summary) => {
+          setResults((current) => replaceRatingSummary(
+            current,
+            openedResource.resource_id,
+            summary,
+          ));
+        }}
+      />
+    );
+  }
 
   return (
     <main className="main-panel advanced-search-panel">
@@ -158,9 +133,7 @@ export default function AdvancedSearchPanel({
             <circle cx="11" cy="11" r="7" />
             <line x1="16.5" y1="16.5" x2="21" y2="21" />
           </svg>
-          <h2 className="main-panel__channel-name">
-            {workspace === 'resource' ? 'Resource' : 'Advanced Search'}
-          </h2>
+          <h2 className="main-panel__channel-name">Advanced Search</h2>
           <span className="main-panel__server-badge">{serverName}</span>
         </div>
         <div className="main-panel__topbar-right">
@@ -180,19 +153,6 @@ export default function AdvancedSearchPanel({
         </div>
       </header>
 
-      {workspace === 'resource' && openedResource ? (
-        <div className="advanced-search-panel__body">
-          <ResourceAccessPanel
-            key={openedResource.resource_id}
-            resource={openedResource}
-            ratingPending={Boolean(ratingPending[openedResource.resource_id])}
-            ratingError={ratingErrors[openedResource.resource_id] || ''}
-            onRate={mutateRating}
-            onClearRating={(resourceId) => mutateRating(resourceId, null)}
-            onBack={onBackToSearch}
-          />
-        </div>
-      ) : (
       <div className="advanced-search-panel__body">
         <section className="advanced-search-panel__intro">
           <div>
@@ -266,7 +226,6 @@ export default function AdvancedSearchPanel({
           )}
         </section>
       </div>
-      )}
     </main>
   );
 }

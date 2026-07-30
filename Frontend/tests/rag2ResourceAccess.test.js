@@ -79,10 +79,10 @@ test('resource workspace preserves the mounted search state and clears on server
 
   assert.match(
     dashboard,
-    /workspace === 'advanced-search' \|\| workspace === 'resource'/,
+    /workspace === 'advanced-search'[\s\S]*resourceOrigin === 'advanced-search'/,
   );
   assert.match(dashboard, /key=\{activeServerId\}/);
-  assert.match(dashboard, /onBackToSearch=\{\(\) => setWorkspace\('advanced-search'\)\}/);
+  assert.match(dashboard, /onBackToSearch=\{\(\) => \{/);
   assert.match(panel, /const \[query, setQuery\]/);
   assert.match(panel, /const \[results, setResults\]/);
   assert.match(panel, /openedResourceId/);

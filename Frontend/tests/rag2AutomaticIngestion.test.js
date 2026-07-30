@@ -81,7 +81,7 @@ test('MainPanel triggers only after canonical attachment insertion succeeds', as
     'utf8',
   );
   const attachmentInsert = source.indexOf(".from('message_attachments')");
-  const selectedId = source.indexOf(".select('id')", attachmentInsert);
+  const selectedId = source.indexOf(".select('*')", attachmentInsert);
   const successCheck = source.indexOf('attachmentData?.id', selectedId);
   const trigger = source.indexOf('startAutomaticRag2Ingestion(', successCheck);
 

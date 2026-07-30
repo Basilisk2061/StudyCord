@@ -52,6 +52,23 @@ class Rag2AutomaticIngestionResponse(BaseModel):
     indexing_scheduled: bool
 
 
+class ChannelResourceMetadataRequest(BaseModel):
+    resource_ids: list[UUID] = Field(min_length=1, max_length=200)
+
+
+class ChannelResourceCardMetadata(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    resource_id: UUID
+    title: str
+    original_filename: str
+    detected_type: Literal["pdf", "docx", "txt"]
+    size_bytes: int | None = None
+    average_rating: float | None = Field(default=None, ge=1, le=5)
+    rating_count: int = Field(ge=0)
+    current_user_rating: int | None = Field(default=None, ge=1, le=5)
+
+
 class Rag2SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     limit: int = Field(default=10, ge=1, le=25)

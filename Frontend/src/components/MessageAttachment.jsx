@@ -48,7 +48,11 @@ function DocTypeIcon({ fileType }) {
   );
 }
 
-export default function MessageAttachment({ attachment }) {
+export default function MessageAttachment({
+  attachment,
+  resourceMetadata = null,
+  onOpenResource,
+}) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
   if (!attachment) return null;
@@ -110,8 +114,24 @@ export default function MessageAttachment({ attachment }) {
       <DocTypeIcon fileType={file_type} />
       <div className="attachment-doc__info">
         <span className="attachment-doc__name" title={file_name}>{file_name}</span>
+        {resourceMetadata && (
+          <span className="attachment-doc__rating">
+            {resourceMetadata.rating_count > 0
+              ? `★ ${Number(resourceMetadata.average_rating).toFixed(1)} (${resourceMetadata.rating_count} ${resourceMetadata.rating_count === 1 ? 'rating' : 'ratings'})`
+              : 'Not rated yet'}
+          </span>
+        )}
         <span className="attachment-doc__meta">{prettyType(file_type)} · {formatFileSize(file_size)}</span>
       </div>
+      {resourceMetadata && (
+        <button
+          type="button"
+          className="attachment-doc__open"
+          onClick={() => onOpenResource?.(resourceMetadata)}
+        >
+          Open resource
+        </button>
+      )}
       <a
         href={file_url}
         target="_blank"

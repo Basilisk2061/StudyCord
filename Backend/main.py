@@ -56,8 +56,11 @@ from rag1.sessions import (
 from rag2 import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_MODEL,
+    ChannelResourceCardMetadata,
+    ChannelResourceMetadataRequest,
     Rag2AutomaticIngestionError,
     Rag2AutomaticIngestionResponse,
+    Rag2ChannelResourceError,
     Rag2IndexingError,
     Rag2IndexingResponse,
     Rag2RatingError,
@@ -74,6 +77,7 @@ from rag2 import (
     delete_resource_rating,
     download_resource_for_access,
     has_safe_canonical_storage_path,
+    get_channel_resource_metadata,
     index_authorized_resource,
     list_server_resources,
     register_attachment_for_rag2,
@@ -1070,6 +1074,33 @@ async def rag2_server_resources(
         limit=limit,
         offset=offset,
     )
+
+
+@app.post(
+    "/api/rag2/servers/{server_id}/resources/channel-metadata",
+    response_model=list[ChannelResourceCardMetadata],
+)
+async def rag2_channel_resource_metadata(
+    server_id: uuid.UUID,
+    request: ChannelResourceMetadataRequest,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    canonical_server_id = str(server_id)
+    await require_server_permission(
+        caller_client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    try:
+        return await get_channel_resource_metadata(
+            caller_client,
+            canonical_server_id,
+            [str(resource_id) for resource_id in request.resource_ids],
+        )
+    except Rag2ChannelResourceError as error:
+        raise HTTPException(error.status_code, error.detail) from error
 
 
 async def _prepare_rag2_indexing(

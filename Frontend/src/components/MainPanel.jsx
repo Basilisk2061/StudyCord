@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { apiRequest } from '../lib/api';
@@ -6,6 +6,10 @@ import {
   isRag2CandidateFilename,
   startAutomaticRag2Ingestion,
 } from '../lib/rag2AutomaticIngestion';
+import {
+  fetchChannelResourceMetadata,
+  indexChannelResourceMetadata,
+} from '../lib/channelResourceApi';
 import MessageAttachment from './MessageAttachment';
 
 // ---------- constants ----------
@@ -22,7 +26,8 @@ const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.
 export default function MainPanel({
   serverName, channelName, channelType, channelId, userEmail, profile,
   onLogout, channelSidebarOpen, onToggleChannelSidebar, onMobileBack,
-  serversCount, channelsCount, activeServerId, userId,
+  serversCount, channelsCount, activeServerId, userId, onOpenResource,
+  resourceRatingOverrides = {},
 }) {
   const navigate = useNavigate();
   const hasChannel = channelName && serverName;
@@ -40,6 +45,67 @@ export default function MainPanel({
   const [filePreview, setFilePreview] = useState(null);      // preview URL for images
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
+  const [resourceMetadataById, setResourceMetadataById] = useState({});
+  const [resourceMetadataRefresh, setResourceMetadataRefresh] = useState(0);
+  const resourceRefreshTimersRef = useRef([]);
+
+  const resourceIds = [...new Set(
+    messages
+      .map((message) => message.attachment?.resource_id)
+      .filter(Boolean),
+  )];
+  const resourceIdsKey = resourceIds.slice().sort().join(',');
+
+  useEffect(() => {
+    resourceRefreshTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    resourceRefreshTimersRef.current = [];
+    return () => {
+      resourceRefreshTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      resourceRefreshTimersRef.current = [];
+    };
+  }, [channelId]);
+
+  useEffect(() => {
+    if (!activeServerId || !resourceIdsKey) return;
+    const controller = new AbortController();
+    const ids = resourceIdsKey.split(',');
+    const batches = [];
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      batches.push(ids.slice(offset, offset + 200));
+    }
+
+    Promise.all(
+      batches.map((batch) => fetchChannelResourceMetadata(
+        apiRequest,
+        activeServerId,
+        batch,
+        { signal: controller.signal },
+      )),
+    )
+      .then((rows) => setResourceMetadataById(
+        indexChannelResourceMetadata(rows.flat()),
+      ))
+      .catch((error) => {
+        if (error?.name !== 'AbortError') {
+          console.warn(
+            '[RAG2-CHANNEL] Resource metadata could not be loaded.',
+            { status: error?.status || 'unknown' },
+          );
+        }
+      });
+
+    return () => controller.abort();
+  }, [activeServerId, resourceIdsKey, resourceMetadataRefresh]);
+
+  const scheduleResourceMetadataRefresh = () => {
+    resourceRefreshTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    resourceRefreshTimersRef.current = [2000, 10000, 30000, 60000].map(
+      (delay) => window.setTimeout(
+        () => setResourceMetadataRefresh((value) => value + 1),
+        delay,
+      ),
+    );
+  };
 
   // ---------- fetch attachments for a list of message IDs ----------
   const fetchAttachments = async (messageIds) => {
@@ -63,6 +129,7 @@ export default function MainPanel({
   // ---------- fetch messages when channel changes ----------
   useEffect(() => {
     if (!channelId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages([]);
       return;
     }
@@ -301,7 +368,7 @@ export default function MainPanel({
             file_size: pendingFile.size,
             storage_path: storagePath,
           })
-          .select('id')
+          .select('*')
           .single();
 
         if (attErr) {
@@ -311,12 +378,49 @@ export default function MainPanel({
           attachmentData?.id
           && isRag2CandidateFilename(pendingFile.name)
         ) {
+          setMessages((current) => {
+            const nextMessage = {
+              ...msgData,
+              profiles: profile || {
+                username: userEmail?.split('@')[0] || 'Unknown',
+                avatar_url: null,
+              },
+              attachment: attachmentData,
+            };
+            const existingIndex = current.findIndex((message) => message.id === msgData.id);
+            if (existingIndex < 0) {
+              return [...current, nextMessage].sort(
+                (a, b) => new Date(a.created_at) - new Date(b.created_at),
+              );
+            }
+            return current.map((message) => (
+              message.id === msgData.id
+                ? { ...message, attachment: attachmentData }
+                : message
+            ));
+          });
+
           // The attachment is already committed. Semantic enrichment is a
           // detached secondary operation and cannot fail the sent message.
           startAutomaticRag2Ingestion(
             apiRequest,
             attachmentData.id,
             {
+              onSuccess: (result) => {
+                if (!result?.resource_id) return;
+                setMessages((current) => current.map((message) => (
+                  message.id === msgData.id
+                    ? {
+                        ...message,
+                        attachment: {
+                          ...message.attachment,
+                          resource_id: result.resource_id,
+                        },
+                      }
+                    : message
+                )));
+                scheduleResourceMetadataRefresh();
+              },
               onFailure: (error) => {
                 console.warn(
                   '[RAG2-AUTO] Semantic enrichment did not start.',
@@ -453,7 +557,16 @@ export default function MainPanel({
               <div className="message-text">{msg.content}</div>
             )}
             {msg.attachment && (
-              <MessageAttachment attachment={msg.attachment} />
+              <MessageAttachment
+                attachment={msg.attachment}
+                resourceMetadata={resourceMetadataById[msg.attachment.resource_id]
+                  ? {
+                      ...resourceMetadataById[msg.attachment.resource_id],
+                      ...resourceRatingOverrides[msg.attachment.resource_id],
+                    }
+                  : null}
+                onOpenResource={onOpenResource}
+              />
             )}
           </div>
         </div>
