@@ -1,4 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { supabase } from '../lib/supabase';
 import VoiceSessionBar from './VoiceSessionBar';
 import { hasServerPermission } from '../lib/permissions';
@@ -16,18 +32,162 @@ function VoiceIcon() {
   );
 }
 
+function ChannelItemContents({ channel, voiceCount = 0 }) {
+  return (
+    <>
+      {channel.type === 'voice' ? <VoiceIcon /> : <HashIcon />}
+      <span className="channel-item__name">{channel.name}</span>
+      {channel.type === 'voice' && voiceCount > 0 && (
+        <span className="channel-item__voice-count" title={`${voiceCount} connected`}>
+          {voiceCount}
+        </span>
+      )}
+    </>
+  );
+}
+
+function StaticChannelItem({ channel, activeChannelId, onSelectChannel, voiceCount }) {
+  return (
+    <button
+      className={`channel-item ${channel.type === 'voice' ? 'channel-item--voice' : ''} ${activeChannelId === channel.id ? 'channel-item--active' : ''}`}
+      onClick={() => onSelectChannel(channel.id, channel.name, channel.type)}
+    >
+      <ChannelItemContents channel={channel} voiceCount={voiceCount} />
+    </button>
+  );
+}
+
+function SortableChannelItem({
+  channel,
+  activeChannelId,
+  onSelectChannel,
+  voiceCount,
+  disabled,
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: channel.id, disabled });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.55 : 1,
+    zIndex: isDragging ? 2 : undefined,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`channel-item channel-item--sortable ${channel.type === 'voice' ? 'channel-item--voice' : ''} ${activeChannelId === channel.id ? 'channel-item--active' : ''}`}
+    >
+      <button
+        className="channel-item__select"
+        onClick={() => onSelectChannel(channel.id, channel.name, channel.type)}
+      >
+        <ChannelItemContents channel={channel} voiceCount={voiceCount} />
+      </button>
+      <button
+        type="button"
+        className="channel-item__drag-handle"
+        aria-label={`Reorder ${channel.name}`}
+        title="Drag to reorder"
+        disabled={disabled}
+        {...attributes}
+        {...listeners}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="8" cy="5" r="1.5" />
+          <circle cx="16" cy="5" r="1.5" />
+          <circle cx="8" cy="12" r="1.5" />
+          <circle cx="16" cy="12" r="1.5" />
+          <circle cx="8" cy="19" r="1.5" />
+          <circle cx="16" cy="19" r="1.5" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+function SortableChannelList({
+  channels,
+  activeChannelId,
+  onSelectChannel,
+  voiceCounts,
+  onReorderChannel,
+  reorderBusy,
+}) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const handleDragEnd = async ({ active, over }) => {
+    if (!over || active.id === over.id || reorderBusy) return;
+
+    const oldIndex = channels.findIndex((channel) => channel.id === active.id);
+    const newIndex = channels.findIndex((channel) => channel.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const reordered = arrayMove(channels, oldIndex, newIndex);
+    const movedIndex = reordered.findIndex((channel) => channel.id === active.id);
+    const beforeChannelId = reordered[movedIndex - 1]?.id || null;
+    const afterChannelId = reordered[movedIndex + 1]?.id || null;
+
+    await onReorderChannel(active.id, beforeChannelId, afterChannelId);
+  };
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext
+        items={channels.map((channel) => channel.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        {channels.map((channel) => (
+          <SortableChannelItem
+            key={channel.id}
+            channel={channel}
+            activeChannelId={activeChannelId}
+            onSelectChannel={onSelectChannel}
+            voiceCount={voiceCounts[channel.id] || 0}
+            disabled={reorderBusy}
+          />
+        ))}
+      </SortableContext>
+    </DndContext>
+  );
+}
+
 export default function ChannelSidebar({
   serverId, serverName, channels, channelsLoading, channelsError,
-  activeChannelId, onSelectChannel, onCreateChannel,
+  activeChannelId, onSelectChannel, onCreateChannel, onReorderChannel,
   voiceSession,
   currentRole,
   onOpenSettings,
+  onLeaveServer,
+  workspace,
+  onOpenAdvancedSearch,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [newChannelType, setNewChannelType] = useState('text');
   const [creating, setCreating] = useState(false);
   const [err, setErr] = useState(null);
+  const [reorderBusy, setReorderBusy] = useState(false);
+  const [reorderError, setReorderError] = useState('');
+  const [serverMenuOpen, setServerMenuOpen] = useState(false);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState('');
 
   // ---------- voice participant counts per channel ----------
   const [voiceCounts, setVoiceCounts] = useState({});
@@ -99,6 +259,31 @@ export default function ChannelSidebar({
     setCreating(false);
   };
 
+  const handleReorder = async (channelId, beforeChannelId, afterChannelId) => {
+    if (!onReorderChannel || reorderBusy) return;
+    setReorderBusy(true);
+    setReorderError('');
+    const result = await onReorderChannel(channelId, beforeChannelId, afterChannelId);
+    if (!result?.success) {
+      setReorderError(result?.error || 'Channel order changed. Please try again.');
+    }
+    setReorderBusy(false);
+  };
+
+  const handleLeaveServer = async () => {
+    if (!onLeaveServer || leaving || currentRole === 'owner') return;
+    setLeaving(true);
+    setLeaveError('');
+    const result = await onLeaveServer();
+    if (result?.success) {
+      setLeaveConfirmOpen(false);
+      setServerMenuOpen(false);
+    } else {
+      setLeaveError(result?.error || 'Could not leave the server. Please try again.');
+    }
+    setLeaving(false);
+  };
+
   if (!serverId) {
     return (
       <aside className="channel-sidebar" id="channel-sidebar">
@@ -127,8 +312,58 @@ export default function ChannelSidebar({
             </svg>
           </button>
         )}
+        <div className="server-header-menu">
+          <button
+            type="button"
+            className="channel-settings-btn"
+            onClick={() => setServerMenuOpen((open) => !open)}
+            title="Server menu"
+            aria-label="Server menu"
+            aria-expanded={serverMenuOpen}
+          >
+            <span aria-hidden="true">•••</span>
+          </button>
+          {serverMenuOpen && (
+            <div className="server-header-menu__popover" role="menu">
+              <button
+                type="button"
+                className="server-header-menu__leave"
+                role="menuitem"
+                disabled={currentRole === 'owner'}
+                onClick={() => {
+                  setLeaveError('');
+                  setLeaveConfirmOpen(true);
+                  setServerMenuOpen(false);
+                }}
+              >
+                Leave server
+              </button>
+              {currentRole === 'owner' && (
+                <p className="server-header-menu__note">
+                  Transfer ownership or delete the server before leaving.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       <nav className="channel-sidebar__list">
+        <button
+          type="button"
+          className={`advanced-search-nav ${workspace === 'advanced-search' ? 'advanced-search-nav--active' : ''}`}
+          onClick={onOpenAdvancedSearch}
+          aria-current={workspace === 'advanced-search' ? 'page' : undefined}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <line x1="16.5" y1="16.5" x2="21" y2="21" />
+          </svg>
+          <span>
+            <strong>Advanced Search</strong>
+            <small>Search this server</small>
+          </span>
+        </button>
+
         {channelsLoading && <div className="channel-sidebar__empty"><p>Loading channels…</p></div>}
         {channelsError && !channelsLoading && <div className="channel-sidebar__empty"><p style={{ color: 'var(--error-color)' }}>Error: {channelsError}</p></div>}
         {!channelsLoading && !channelsError && channels.length === 0 && <div className="channel-sidebar__empty"><p>No channels yet</p></div>}
@@ -139,11 +374,26 @@ export default function ChannelSidebar({
               <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z" /></svg>
               <span>Text Channels</span>
             </div>
-            {textCh.map((ch) => (
-              <button key={ch.id} className={`channel-item ${activeChannelId === ch.id ? 'channel-item--active' : ''}`} onClick={() => onSelectChannel(ch.id, ch.name, ch.type)}>
-                <HashIcon /><span className="channel-item__name">{ch.name}</span>
-              </button>
-            ))}
+            {canManageChannels ? (
+              <SortableChannelList
+                channels={textCh}
+                activeChannelId={activeChannelId}
+                onSelectChannel={onSelectChannel}
+                voiceCounts={voiceCounts}
+                onReorderChannel={handleReorder}
+                reorderBusy={reorderBusy}
+              />
+            ) : (
+              textCh.map((channel) => (
+                <StaticChannelItem
+                  key={channel.id}
+                  channel={channel}
+                  activeChannelId={activeChannelId}
+                  onSelectChannel={onSelectChannel}
+                  voiceCount={0}
+                />
+              ))
+            )}
           </div>
         )}
 
@@ -153,24 +403,32 @@ export default function ChannelSidebar({
               <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z" /></svg>
               <span>Voice Channels</span>
             </div>
-            {voiceCh.map((ch) => {
-              const count = voiceCounts[ch.id] || 0;
-              return (
-                <button
-                  key={ch.id}
-                  className={`channel-item channel-item--voice ${activeChannelId === ch.id ? 'channel-item--active' : ''}`}
-                  onClick={() => onSelectChannel(ch.id, ch.name, ch.type)}
-                >
-                  <VoiceIcon />
-                  <span className="channel-item__name">{ch.name}</span>
-                  {count > 0 && (
-                    <span className="channel-item__voice-count" title={`${count} connected`}>
-                      {count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {canManageChannels ? (
+              <SortableChannelList
+                channels={voiceCh}
+                activeChannelId={activeChannelId}
+                onSelectChannel={onSelectChannel}
+                voiceCounts={voiceCounts}
+                onReorderChannel={handleReorder}
+                reorderBusy={reorderBusy}
+              />
+            ) : (
+              voiceCh.map((channel) => (
+                <StaticChannelItem
+                  key={channel.id}
+                  channel={channel}
+                  activeChannelId={activeChannelId}
+                  onSelectChannel={onSelectChannel}
+                  voiceCount={voiceCounts[channel.id] || 0}
+                />
+              ))
+            )}
+          </div>
+        )}
+
+        {reorderError && (
+          <div className="channel-reorder-error" role="status">
+            {reorderError}
           </div>
         )}
 
@@ -231,6 +489,51 @@ export default function ChannelSidebar({
           onToggleMute={voiceSession.handleToggleMute}
           onLeave={voiceSession.handleLeave}
         />
+      )}
+      {leaveConfirmOpen && (
+        <div
+          className="modal-overlay"
+          onClick={() => {
+            if (!leaving) setLeaveConfirmOpen(false);
+          }}
+        >
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="leave-server-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="leave-server-title" className="modal-card__title">
+              Leave {serverName || 'server'}?
+            </h3>
+            <p className="modal-card__desc">
+              You will lose access to this server. Your historical messages,
+              resources, and ratings will remain.
+            </p>
+            {leaveError && (
+              <div className="settings-error" role="alert">{leaveError}</div>
+            )}
+            <div className="modal-card__actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={leaving}
+                onClick={() => setLeaveConfirmOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary server-leave-confirm"
+                disabled={leaving}
+                onClick={handleLeaveServer}
+              >
+                {leaving ? 'Leaving…' : 'Leave server'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </aside>
   );

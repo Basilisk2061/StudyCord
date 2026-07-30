@@ -1,6 +1,19 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { apiRequest } from '../lib/api';
+import {
+  isRag2CandidateFilename,
+  startAutomaticRag2Ingestion,
+} from '../lib/rag2AutomaticIngestion';
+import {
+  fetchChannelResourceMetadata,
+  indexChannelResourceMetadata,
+} from '../lib/channelResourceApi';
+import {
+  deleteOwnMessage,
+  removeDeletedMessage,
+} from '../lib/lifecycleApi';
 import MessageAttachment from './MessageAttachment';
 
 // ---------- constants ----------
@@ -17,7 +30,8 @@ const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.
 export default function MainPanel({
   serverName, channelName, channelType, channelId, userEmail, profile,
   onLogout, channelSidebarOpen, onToggleChannelSidebar, onMobileBack,
-  serversCount, channelsCount, activeServerId, userId,
+  serversCount, channelsCount, activeServerId, userId, onOpenResource,
+  resourceRatingOverrides = {},
 }) {
   const navigate = useNavigate();
   const hasChannel = channelName && serverName;
@@ -27,6 +41,10 @@ export default function MainPanel({
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
+  const [openMessageMenuId, setOpenMessageMenuId] = useState(null);
+  const [deleteCandidate, setDeleteCandidate] = useState(null);
+  const [deletingMessageId, setDeletingMessageId] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
   const messagesEndRef = useRef(null);
 
   // ---------- file attachment state ----------
@@ -35,6 +53,67 @@ export default function MainPanel({
   const [filePreview, setFilePreview] = useState(null);      // preview URL for images
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
+  const [resourceMetadataById, setResourceMetadataById] = useState({});
+  const [resourceMetadataRefresh, setResourceMetadataRefresh] = useState(0);
+  const resourceRefreshTimersRef = useRef([]);
+
+  const resourceIds = [...new Set(
+    messages
+      .map((message) => message.attachment?.resource_id)
+      .filter(Boolean),
+  )];
+  const resourceIdsKey = resourceIds.slice().sort().join(',');
+
+  useEffect(() => {
+    resourceRefreshTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    resourceRefreshTimersRef.current = [];
+    return () => {
+      resourceRefreshTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      resourceRefreshTimersRef.current = [];
+    };
+  }, [channelId]);
+
+  useEffect(() => {
+    if (!activeServerId || !resourceIdsKey) return;
+    const controller = new AbortController();
+    const ids = resourceIdsKey.split(',');
+    const batches = [];
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      batches.push(ids.slice(offset, offset + 200));
+    }
+
+    Promise.all(
+      batches.map((batch) => fetchChannelResourceMetadata(
+        apiRequest,
+        activeServerId,
+        batch,
+        { signal: controller.signal },
+      )),
+    )
+      .then((rows) => setResourceMetadataById(
+        indexChannelResourceMetadata(rows.flat()),
+      ))
+      .catch((error) => {
+        if (error?.name !== 'AbortError') {
+          console.warn(
+            '[RAG2-CHANNEL] Resource metadata could not be loaded.',
+            { status: error?.status || 'unknown' },
+          );
+        }
+      });
+
+    return () => controller.abort();
+  }, [activeServerId, resourceIdsKey, resourceMetadataRefresh]);
+
+  const scheduleResourceMetadataRefresh = () => {
+    resourceRefreshTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    resourceRefreshTimersRef.current = [2000, 10000, 30000, 60000].map(
+      (delay) => window.setTimeout(
+        () => setResourceMetadataRefresh((value) => value + 1),
+        delay,
+      ),
+    );
+  };
 
   // ---------- fetch attachments for a list of message IDs ----------
   const fetchAttachments = async (messageIds) => {
@@ -58,9 +137,13 @@ export default function MainPanel({
   // ---------- fetch messages when channel changes ----------
   useEffect(() => {
     if (!channelId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages([]);
       return;
     }
+    setOpenMessageMenuId(null);
+    setDeleteCandidate(null);
+    setDeleteError('');
 
     const loadMessages = async () => {
       setMessagesLoading(true);
@@ -147,6 +230,26 @@ export default function MainPanel({
             );
             return updated;
           });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'messages',
+          filter: `channel_id=eq.${channelId}`,
+        },
+        (payload) => {
+          const deletedMessageId = payload.old?.id;
+          if (!deletedMessageId) return;
+          setMessages((current) => removeDeletedMessage(current, deletedMessageId));
+          setOpenMessageMenuId((current) => (
+            current === deletedMessageId ? null : current
+          ));
+          setDeleteCandidate((current) => (
+            current?.id === deletedMessageId ? null : current
+          ));
         }
       )
       .subscribe();
@@ -283,7 +386,7 @@ export default function MainPanel({
 
       // ---- Create attachment row ----
       if (hasFile && msgData) {
-        const { error: attErr } = await supabase
+        const { data: attachmentData, error: attErr } = await supabase
           .from('message_attachments')
           .insert({
             message_id: msgData.id,
@@ -295,11 +398,68 @@ export default function MainPanel({
             file_type: pendingFile.type,
             file_size: pendingFile.size,
             storage_path: storagePath,
-          });
+          })
+          .select('*')
+          .single();
 
         if (attErr) {
           console.error('Failed to save attachment record:', attErr);
           // message was still sent, just no attachment record
+        } else if (
+          attachmentData?.id
+          && isRag2CandidateFilename(pendingFile.name)
+        ) {
+          setMessages((current) => {
+            const nextMessage = {
+              ...msgData,
+              profiles: profile || {
+                username: userEmail?.split('@')[0] || 'Unknown',
+                avatar_url: null,
+              },
+              attachment: attachmentData,
+            };
+            const existingIndex = current.findIndex((message) => message.id === msgData.id);
+            if (existingIndex < 0) {
+              return [...current, nextMessage].sort(
+                (a, b) => new Date(a.created_at) - new Date(b.created_at),
+              );
+            }
+            return current.map((message) => (
+              message.id === msgData.id
+                ? { ...message, attachment: attachmentData }
+                : message
+            ));
+          });
+
+          // The attachment is already committed. Semantic enrichment is a
+          // detached secondary operation and cannot fail the sent message.
+          startAutomaticRag2Ingestion(
+            apiRequest,
+            attachmentData.id,
+            {
+              onSuccess: (result) => {
+                if (!result?.resource_id) return;
+                setMessages((current) => current.map((message) => (
+                  message.id === msgData.id
+                    ? {
+                        ...message,
+                        attachment: {
+                          ...message.attachment,
+                          resource_id: result.resource_id,
+                        },
+                      }
+                    : message
+                )));
+                scheduleResourceMetadataRefresh();
+              },
+              onFailure: (error) => {
+                console.warn(
+                  '[RAG2-AUTO] Semantic enrichment did not start.',
+                  { status: error?.status || 'unknown' },
+                );
+              },
+            },
+          );
         }
       }
 
@@ -314,6 +474,25 @@ export default function MainPanel({
 
     setSending(false);
     setUploading(false);
+  };
+
+  const handleDeleteMessage = async () => {
+    if (!deleteCandidate?.id || deletingMessageId) return;
+    const messageId = deleteCandidate.id;
+    setDeletingMessageId(messageId);
+    setDeleteError('');
+    try {
+      await deleteOwnMessage(apiRequest, messageId);
+      setMessages((current) => removeDeletedMessage(current, messageId));
+      setDeleteCandidate(null);
+      setOpenMessageMenuId(null);
+    } catch (error) {
+      setDeleteError(
+        error?.message || 'The message could not be deleted. Please try again.',
+      );
+    } finally {
+      setDeletingMessageId(null);
+    }
   };
 
   // ---------- format timestamp ----------
@@ -401,6 +580,7 @@ export default function MainPanel({
       const username = msg.profiles?.username || 'Unknown';
       const avatarUrl = msg.profiles?.avatar_url;
       const initial = username[0]?.toUpperCase() || '?';
+      const isOwnMessage = msg.user_id === userId;
 
       items.push(
         <div className="message-row" key={msg.id} id={`message-${msg.id}`}>
@@ -423,12 +603,52 @@ export default function MainPanel({
             <div className="message-header">
               <span className="message-author">{username}</span>
               <span className="message-time">{formatTime(msg.created_at)}</span>
+              {isOwnMessage && (
+                <div className="message-actions">
+                  <button
+                    type="button"
+                    className="message-actions__trigger"
+                    aria-label="Message actions"
+                    aria-expanded={openMessageMenuId === msg.id}
+                    onClick={() => setOpenMessageMenuId((current) => (
+                      current === msg.id ? null : msg.id
+                    ))}
+                  >
+                    <span aria-hidden="true">•••</span>
+                  </button>
+                  {openMessageMenuId === msg.id && (
+                    <div className="message-actions__menu" role="menu">
+                      <button
+                        type="button"
+                        className="message-actions__delete"
+                        role="menuitem"
+                        onClick={() => {
+                          setDeleteCandidate(msg);
+                          setDeleteError('');
+                          setOpenMessageMenuId(null);
+                        }}
+                      >
+                        Delete message
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             {msg.content && (
               <div className="message-text">{msg.content}</div>
             )}
             {msg.attachment && (
-              <MessageAttachment attachment={msg.attachment} />
+              <MessageAttachment
+                attachment={msg.attachment}
+                resourceMetadata={resourceMetadataById[msg.attachment.resource_id]
+                  ? {
+                      ...resourceMetadataById[msg.attachment.resource_id],
+                      ...resourceRatingOverrides[msg.attachment.resource_id],
+                    }
+                  : null}
+                onOpenResource={onOpenResource}
+              />
             )}
           </div>
         </div>
@@ -663,6 +883,53 @@ export default function MainPanel({
           </div>
         )}
       </div>
+      {deleteCandidate && (
+        <div
+          className="modal-overlay"
+          onClick={() => {
+            if (!deletingMessageId) setDeleteCandidate(null);
+          }}
+        >
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-message-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="delete-message-title" className="modal-card__title">
+              Delete message?
+            </h3>
+            <p className="modal-card__desc">
+              This cannot be undone. It permanently deletes the message and
+              its attachment. Any
+              linked server resource, chunks, and ratings used only by this
+              message are also removed. Existing private RAG 1 imports remain.
+            </p>
+            {deleteError && (
+              <div className="settings-error" role="alert">{deleteError}</div>
+            )}
+            <div className="modal-card__actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={Boolean(deletingMessageId)}
+                onClick={() => setDeleteCandidate(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary message-delete-confirm"
+                disabled={Boolean(deletingMessageId)}
+                onClick={handleDeleteMessage}
+              >
+                {deletingMessageId ? 'Deleting…' : 'Delete message'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

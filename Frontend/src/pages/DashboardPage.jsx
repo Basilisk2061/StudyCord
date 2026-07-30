@@ -4,12 +4,49 @@ import { useAuth } from '../lib/AuthContext';
 import ServerSidebar from '../components/ServerSidebar';
 import ChannelSidebar from '../components/ChannelSidebar';
 import MainPanel from '../components/MainPanel';
+import AdvancedSearchPanel from '../components/AdvancedSearchPanel';
+import ResourceWorkspacePanel from '../components/ResourceWorkspacePanel';
 import VoicePanel from '../components/VoicePanel';
 import RightPanel from '../components/RightPanel';
 import { useVoiceSession } from '../hooks/useVoiceSession';
 import ServerSettingsModal from '../components/ServerSettingsModal';
 import { apiRequest } from '../lib/api';
 import { getCurrentMemberRole } from '../lib/permissions';
+import { leaveServer } from '../lib/lifecycleApi';
+
+function moveChannelLocally(channels, channelId, beforeChannelId, afterChannelId) {
+  const movedChannel = channels.find((channel) => channel.id === channelId);
+  if (!movedChannel) return channels;
+
+  const sameTypeChannels = channels.filter(
+    (channel) => channel.type === movedChannel.type && channel.id !== channelId
+  );
+
+  let insertionIndex = 0;
+  if (beforeChannelId) {
+    const beforeIndex = sameTypeChannels.findIndex(
+      (channel) => channel.id === beforeChannelId
+    );
+    if (beforeIndex < 0) return channels;
+    insertionIndex = beforeIndex + 1;
+  } else if (afterChannelId) {
+    const afterIndex = sameTypeChannels.findIndex(
+      (channel) => channel.id === afterChannelId
+    );
+    if (afterIndex < 0) return channels;
+    insertionIndex = afterIndex;
+  }
+
+  const reorderedGroup = [...sameTypeChannels];
+  reorderedGroup.splice(insertionIndex, 0, movedChannel);
+
+  let groupIndex = 0;
+  return channels.map((channel) => (
+    channel.type === movedChannel.type
+      ? reorderedGroup[groupIndex++]
+      : channel
+  ));
+}
 
 export default function DashboardPage() {
   const { session } = useAuth();
@@ -43,6 +80,11 @@ export default function DashboardPage() {
   const [activeChannelId, setActiveChannelId] = useState(null);
   const [activeChannelName, setActiveChannelName] = useState(null);
   const [activeChannelType, setActiveChannelType] = useState(null);
+  const [workspace, setWorkspace] = useState('channel');
+  const [resourceOrigin, setResourceOrigin] = useState(null);
+  const [channelResource, setChannelResource] = useState(null);
+  const [channelRatingOverrides, setChannelRatingOverrides] = useState({});
+  const [rag1ActivationRequest, setRag1ActivationRequest] = useState(null);
 
   // ---------- layout ----------
   const [channelSidebarOpen, setChannelSidebarOpen] = useState(true);
@@ -139,6 +181,31 @@ export default function DashboardPage() {
     fetchServers();
   }, [fetchServers]);
 
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const channel = supabase
+      .channel(`servers_watch:${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'servers',
+        },
+        (payload) => {
+          setServers((currentServers) => currentServers.map((server) => (
+            server.id === payload.new.id ? { ...server, ...payload.new } : server
+          )));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id]);
+
   // ──────────────────────────────────────────────
   // 3. Load channels for selected server
   // ──────────────────────────────────────────────
@@ -157,7 +224,10 @@ export default function DashboardPage() {
         .from('channels')
         .select('*')
         .eq('server_id', serverId)
-        .order('created_at', { ascending: true });
+        .order('type', { ascending: true })
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
 
       if (error) throw error;
       setChannels(data || []);
@@ -172,6 +242,28 @@ export default function DashboardPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchChannels(activeServerId);
+  }, [activeServerId, fetchChannels]);
+
+  useEffect(() => {
+    if (!activeServerId) return;
+
+    const channel = supabase
+      .channel(`channels_watch:${activeServerId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'channels',
+          filter: `server_id=eq.${activeServerId}`,
+        },
+        () => fetchChannels(activeServerId)
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [activeServerId, fetchChannels]);
 
   // ──────────────────────────────────────────────
@@ -234,6 +326,7 @@ export default function DashboardPage() {
       setActiveChannelId(null);
       setActiveChannelName(null);
       setActiveChannelType(null);
+      setWorkspace('channel');
 
       return { success: true };
     } catch (err) {
@@ -263,6 +356,42 @@ export default function DashboardPage() {
     }
   };
 
+  const handleReorderChannel = useCallback(async (
+    channelId,
+    beforeChannelId,
+    afterChannelId
+  ) => {
+    if (!activeServerId) {
+      return { success: false, error: 'Select a server before reordering channels.' };
+    }
+
+    setChannels((currentChannels) => moveChannelLocally(
+      currentChannels,
+      channelId,
+      beforeChannelId,
+      afterChannelId
+    ));
+
+    try {
+      const { error } = await supabase.rpc('reorder_channel', {
+        p_channel_id: channelId,
+        p_before_channel_id: beforeChannelId,
+        p_after_channel_id: afterChannelId,
+      });
+
+      if (error) throw error;
+      await fetchChannels(activeServerId);
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to reorder channel:', error);
+      await fetchChannels(activeServerId);
+      return {
+        success: false,
+        error: error.message || 'Failed to reorder channel.',
+      };
+    }
+  }, [activeServerId, fetchChannels]);
+
   const handleJoinServer = async (inviteCode) => {
     if (!user || !inviteCode.trim()) return;
 
@@ -276,6 +405,7 @@ export default function DashboardPage() {
       setActiveChannelId(null);
       setActiveChannelName(null);
       setActiveChannelType(null);
+      setWorkspace('channel');
 
       return { success: true, message: data.message };
     } catch (err) {
@@ -289,6 +419,10 @@ export default function DashboardPage() {
     setActiveChannelId(null);
     setActiveChannelName(null);
     setActiveChannelType(null);
+    setWorkspace('channel');
+    setResourceOrigin(null);
+    setChannelResource(null);
+    setChannelRatingOverrides({});
     setMobilePanelView('sidebar');
   };
 
@@ -296,7 +430,60 @@ export default function DashboardPage() {
     setActiveChannelId(channelId);
     setActiveChannelName(channelName);
     setActiveChannelType(channelType);
+    setWorkspace('channel');
+    setResourceOrigin(null);
+    setChannelResource(null);
     setMobilePanelView('chat');
+  };
+
+  const handleOpenAdvancedSearch = () => {
+    setWorkspace('advanced-search');
+    setResourceOrigin(null);
+    setChannelResource(null);
+    setMobilePanelView('chat');
+  };
+
+  const handleOpenResource = () => {
+    setWorkspace('resource');
+    setResourceOrigin('advanced-search');
+    setMobilePanelView('chat');
+  };
+
+  const handleOpenChannelResource = (resource) => {
+    setChannelResource(resource);
+    setResourceOrigin('channel');
+    setWorkspace('resource');
+    setMobilePanelView('chat');
+  };
+
+  const handleChannelRatingSummary = (summary) => {
+    const rating = {
+      average_rating: summary.average_rating,
+      rating_count: summary.rating_count,
+      current_user_rating: summary.current_user_rating,
+    };
+    setChannelResource((current) => (
+      current?.resource_id === summary.resource_id
+        ? { ...current, ...rating }
+        : current
+    ));
+    setChannelRatingOverrides((current) => ({
+      ...current,
+      [summary.resource_id]: rating,
+    }));
+  };
+
+  const handleBackToChannel = () => {
+    setWorkspace('channel');
+    setResourceOrigin(null);
+    setChannelResource(null);
+  };
+
+  const handleRag1Activated = (activation) => {
+    setRag1ActivationRequest({
+      ...activation,
+      requestId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    });
   };
 
   const handleLogout = async () => {
@@ -323,9 +510,36 @@ export default function DashboardPage() {
       setActiveChannelId(null);
       setActiveChannelName(null);
       setActiveChannelType(null);
+      setWorkspace('channel');
+      setResourceOrigin(null);
+      setChannelResource(null);
+      setChannelRatingOverrides({});
       leaveVoiceSession?.();
     }
   }, [activeServerId, leaveVoiceSession]);
+
+  const handleLeaveServer = useCallback(async () => {
+    if (!activeServerId) {
+      return { success: false, error: 'No server is selected.' };
+    }
+    try {
+      await leaveVoiceSession?.();
+      await leaveServer(apiRequest, activeServerId);
+      handleServerRemoved(activeServerId);
+      showToast('You left the server.');
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error?.message || 'Could not leave the server. Please try again.',
+      };
+    }
+  }, [
+    activeServerId,
+    handleServerRemoved,
+    leaveVoiceSession,
+    showToast,
+  ]);
 
   useEffect(() => {
     if (!activeServerId || !user?.id) return;
@@ -371,6 +585,11 @@ export default function DashboardPage() {
   const activeServerName = activeServer?.name || null;
   const activeServerInviteCode = activeServer?.invite_code || null;
   const currentRole = getCurrentMemberRole(members, user?.id);
+  const advancedSearchVisible = workspace === 'advanced-search'
+    || (workspace === 'resource' && resourceOrigin === 'advanced-search');
+  const channelResourceVisible = workspace === 'resource'
+    && resourceOrigin === 'channel'
+    && channelResource;
 
   const shellClasses = [
     'dashboard-shell',
@@ -399,11 +618,34 @@ export default function DashboardPage() {
         activeChannelId={activeChannelId}
         onSelectChannel={handleSelectChannel}
         onCreateChannel={handleCreateChannel}
+        onReorderChannel={handleReorderChannel}
         voiceSession={voiceSession}
         currentRole={currentRole}
         onOpenSettings={() => setSettingsOpen(true)}
+        onLeaveServer={handleLeaveServer}
+        workspace={workspace}
+        onOpenAdvancedSearch={handleOpenAdvancedSearch}
       />
-      {activeChannelType === 'voice' ? (
+      {advancedSearchVisible ? (
+        <AdvancedSearchPanel
+          key={activeServerId}
+          serverId={activeServerId}
+          serverName={activeServerName}
+          userEmail={user?.email}
+          profile={profile}
+          onLogout={handleLogout}
+          channelSidebarOpen={channelSidebarOpen}
+          onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
+          onMobileBack={() => setMobilePanelView('sidebar')}
+          workspace={workspace}
+          onOpenResource={handleOpenResource}
+          onBackToSearch={() => {
+            setWorkspace('advanced-search');
+            setResourceOrigin(null);
+          }}
+          onRag1Activated={handleRag1Activated}
+        />
+      ) : activeChannelType === 'voice' ? (
         <VoicePanel
           channelId={activeChannelId}
           channelName={activeChannelName}
@@ -415,31 +657,61 @@ export default function DashboardPage() {
           voiceSession={voiceSession}
         />
       ) : (
-        <MainPanel
-          serverName={activeServerName}
-          channelName={activeChannelName}
-          channelType={activeChannelType}
-          channelId={activeChannelId}
-          userEmail={user?.email}
-          profile={profile}
-          onLogout={handleLogout}
-          channelSidebarOpen={channelSidebarOpen}
-          onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
-          onMobileBack={() => setMobilePanelView('sidebar')}
-          serversCount={servers.length}
-          channelsCount={channels.length}
-          activeServerId={activeServerId}
-          userId={user?.id}
-        />
+        <>
+          {channelResourceVisible && (
+            <ResourceWorkspacePanel
+              key="channel-resource-workspace"
+              resource={channelResource}
+              serverName={activeServerName}
+              userEmail={user?.email}
+              profile={profile}
+              onLogout={handleLogout}
+              channelSidebarOpen={channelSidebarOpen}
+              onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
+              onMobileBack={() => setMobilePanelView('sidebar')}
+              onBack={handleBackToChannel}
+              backLabel={`Back to #${activeChannelName || 'channel'}`}
+              onRatingSummary={handleChannelRatingSummary}
+              onRag1Activated={handleRag1Activated}
+            />
+          )}
+          <div key="channel-main-panel" className={[
+            'dashboard-preserved-channel',
+            channelResourceVisible ? 'dashboard-preserved-channel--hidden' : '',
+          ].filter(Boolean).join(' ')}
+          >
+            <MainPanel
+              serverName={activeServerName}
+              channelName={activeChannelName}
+              channelType={activeChannelType}
+              channelId={activeChannelId}
+              userEmail={user?.email}
+              profile={profile}
+              onLogout={handleLogout}
+              channelSidebarOpen={channelSidebarOpen}
+              onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
+              onMobileBack={() => setMobilePanelView('sidebar')}
+              serversCount={servers.length}
+              channelsCount={channels.length}
+              activeServerId={activeServerId}
+              userId={user?.id}
+              onOpenResource={handleOpenChannelResource}
+              resourceRatingOverrides={channelRatingOverrides}
+            />
+          </div>
+        </>
       )}
       <RightPanel
+        key={user?.id || 'anonymous'}
         activeServerId={activeServerId}
         serverInviteCode={activeServerInviteCode}
+        userId={user?.id}
         members={members}
         membersLoading={membersLoading}
         profile={profile}
         currentRole={currentRole}
         onOpenSettings={() => setSettingsOpen(true)}
+        rag1ActivationRequest={rag1ActivationRequest}
       />
       {settingsOpen && activeServer && (
         <ServerSettingsModal

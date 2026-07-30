@@ -1,15 +1,18 @@
 import os
 import time
 import hashlib
+import warnings
+from contextlib import asynccontextmanager
 # pyrefly: ignore [missing-import]
 import httpx
 # pyrefly: ignore [missing-import]
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 # pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 from pathlib import Path
+from typing import Literal
 
 # Load env variables from Backend/.env using absolute path
 BASE_DIR = Path(__file__).resolve().parent
@@ -21,15 +24,81 @@ import re
 import io
 import secrets
 import string
-from datetime import datetime, timezone
-from fastapi import UploadFile, File, Header, Depends
-from pydantic import BaseModel
-
-# LangChain and Gemini imports (embeddings only)
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
+from fastapi import UploadFile, File, Header, Depends, Query
+# pyrefly: ignore [missing-import]
+from PIL import Image, UnidentifiedImageError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from rag1 import initialize_rag1_persistence
+from rag1.handoff import (
+    Rag1HandoffError,
+    handoff_rag2_resource_to_rag1,
+)
+from rag1.ingestion import RagIngestionError, ingest_rag_document
+from rag1.service import (
+    RagDocumentResolutionError,
+    cache_rag_document,
+    resolve_rag_document,
+)
+from rag1.conversation import (
+    RAG_CHAT_HISTORY_LIMIT,
+    RAG_CHAT_MESSAGE_MAX_CHARS,
+    RAG_CHAT_QUESTION_MAX_CHARS,
+    RAG_RETRIEVAL_K,
+    RagChatProviderResponseError,
+    build_contextualization_messages,
+    build_grounded_answer_messages,
+    conversation_cache_extra,
+    generate_grounded_answer,
+    usable_retrieval_query,
+)
+from rag1.sessions import (
+    RagSessionError,
+    create_study_session,
+    list_study_sessions,
+    open_study_session,
+    session_response,
+)
+from rag2 import (
+    EMBEDDING_DIMENSIONS,
+    EMBEDDING_MODEL,
+    ChannelResourceCardMetadata,
+    ChannelResourceMetadataRequest,
+    Rag2AutomaticIngestionError,
+    Rag2AutomaticIngestionResponse,
+    Rag2ChannelResourceError,
+    Rag2IndexingError,
+    Rag2IndexingResponse,
+    Rag2RatingError,
+    Rag2RatingRequest,
+    Rag2RatingSummary,
+    Rag2ResourceAccessError,
+    Rag2ResourceSearchError,
+    Rag2ResourceSearchRequest,
+    Rag2ResourceSearchResponse,
+    Rag2SearchError,
+    Rag2SearchRequest,
+    Rag2SearchResponse,
+    ServerResourceSummary,
+    authorize_resource_for_access,
+    delete_resource_rating,
+    download_resource_for_access,
+    has_safe_canonical_storage_path,
+    get_channel_resource_metadata,
+    index_authorized_resource,
+    list_server_resources,
+    register_attachment_for_rag2,
+    resolve_authorized_resource,
+    search_server_resources,
+    search_server_chunks,
+    set_resource_rating,
+)
+from lifecycle import (
+    CHANNEL_FILES_BUCKET,
+    LifecycleTargetError,
+    parse_message_deletion_targets,
+)
 
 # OpenRouter LLM import
 from langchain_openai import ChatOpenAI
@@ -68,7 +137,19 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-app = FastAPI(title="StudyCord Secure TURN API")
+@asynccontextmanager
+async def application_lifespan(application: FastAPI):
+    """Initialize Phase 17.2 local metadata storage without changing RAG behavior."""
+    persistence = initialize_rag1_persistence()
+    application.state.rag1_data_dir = persistence.data_dir
+    application.state.rag1_database_path = persistence.database_path
+    yield
+
+
+app = FastAPI(
+    title="StudyCord Secure TURN API",
+    lifespan=application_lifespan,
+)
 
 # Enable CORS for the frontend
 app.add_middleware(
@@ -183,6 +264,13 @@ PERMISSIONS = {
 VALID_ROLES = {"owner", "admin", "member"}
 ROLE_RANK = {"member": 1, "admin": 2, "owner": 3}
 DEFAULT_CHANNELS = ("general", "assignments", "resources")
+SERVER_ICONS_BUCKET = "server-icons"
+SERVER_ICON_MAX_BYTES = 2 * 1024 * 1024
+SERVER_ICON_FORMATS = {
+    "JPEG": ("jpg", "image/jpeg"),
+    "PNG": ("png", "image/png"),
+    "WEBP": ("webp", "image/webp"),
+}
 
 
 class RoleUpdateRequest(BaseModel):
@@ -259,12 +347,155 @@ class SupabaseRestClient:
             response = await client.post(url, json=payload, headers=self._headers())
         if response.status_code >= 400:
             print(f"[SUPABASE-RPC:{self.name}] {function_name} failed: {response.status_code} {response.text[:400]}")
+            if (
+                "resource is already indexed" in response.text
+                or "resource indexing is already in progress" in response.text
+                or "indexing attempt is not active" in response.text
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="The resource indexing state changed. Refresh and try again.",
+                )
+            if "resource is not supported for RAG 2 indexing" in response.text:
+                raise HTTPException(
+                    status_code=422,
+                    detail="This resource is not supported for RAG 2 indexing.",
+                )
+            if "current server membership required" in response.text:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Current server membership is required.",
+                )
+            if (
+                "query embedding is invalid" in response.text
+                or "search limit must be between 1 and 25" in response.text
+                or "candidate limit must be between 1 and 100" in response.text
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Semantic search parameters were rejected.",
+                )
+            if "rating resource not found" in response.text:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Resource not found.",
+                )
+            if (
+                "rating requires a server-visible resource" in response.text
+                or "current server membership required" in response.text
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Resource rating is not available.",
+                )
+            if "rating must be between 1 and 5" in response.text:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Rating must be between 1 and 5.",
+                )
             if "must be server owner" in response.text:
                 raise HTTPException(status_code=403, detail="Only the server owner can transfer ownership.")
             if "new owner must be a current server member" in response.text:
                 raise HTTPException(status_code=400, detail="New owner must be a current server member.")
+            if "message not found" in response.text:
+                raise HTTPException(status_code=404, detail="Message not found.")
+            if (
+                "only the message author may delete this message" in response.text
+                or "server owner must transfer ownership or delete the server before leaving" in response.text
+            ):
+                raise HTTPException(status_code=403, detail=(
+                    "Only the message author may delete this message."
+                    if "message author" in response.text
+                    else "Transfer ownership or delete the server before leaving."
+                ))
+            if (
+                "message and channel scope do not match" in response.text
+                or "message attachment scope does not match" in response.text
+                or "message attachment cleanup target is invalid" in response.text
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="The message cleanup metadata is inconsistent.",
+                )
             raise HTTPException(status_code=500, detail="Database function failed. Ensure the Phase 14 migration has been run.")
         return response.json() if response.text else None
+
+    async def storage_list(self, bucket: str, prefix: str, *, limit: int, offset: int):
+        url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/list/{bucket}"
+        payload = {
+            "prefix": prefix,
+            "limit": limit,
+            "offset": offset,
+            "sortBy": {"column": "name", "order": "asc"},
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(url, json=payload, headers=self._headers())
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Storage list failed with status {response.status_code}: {response.text[:400]}"
+            )
+        return response.json()
+
+    async def storage_upload(self, bucket: str, path: str, content: bytes, content_type: str):
+        url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}/{path}"
+        headers = {
+            "apikey": self.api_key,
+            "Authorization": f"Bearer {self.bearer_token}",
+            "Content-Type": content_type,
+            "Cache-Control": "max-age=31536000",
+            "x-upsert": "false",
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(url, content=content, headers=headers)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Storage upload failed with status {response.status_code}.")
+        return response.json() if response.text else None
+
+    async def storage_remove(self, bucket: str, paths: list[str]):
+        url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.request(
+                "DELETE",
+                url,
+                json={"prefixes": paths},
+                headers=self._headers(),
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Storage delete failed with status {response.status_code}: {response.text[:400]}"
+            )
+        return response.json() if response.text else None
+
+    async def storage_download(self, bucket: str, path: str, *, max_bytes: int):
+        safe_bucket = quote(bucket, safe="")
+        safe_path = quote(path, safe="/")
+        url = (
+            f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/authenticated/"
+            f"{safe_bucket}/{safe_path}"
+        )
+        headers = {
+            "apikey": self.api_key,
+            "Authorization": f"Bearer {self.bearer_token}",
+        }
+        content = bytearray()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        f"Storage download failed with status {response.status_code}."
+                    )
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > max_bytes:
+                            raise RuntimeError("RAG2_DOWNLOAD_TOO_LARGE")
+                    except ValueError:
+                        pass
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > max_bytes:
+                        raise RuntimeError("RAG2_DOWNLOAD_TOO_LARGE")
+        return bytes(content)
 
 
 def supabase_user(access_token: str) -> SupabaseRestClient:
@@ -283,6 +514,70 @@ def supabase_admin() -> SupabaseRestClient:
             detail="This operation requires SUPABASE_SERVICE_ROLE_KEY in Backend/.env.",
         )
     return SupabaseRestClient("admin", SUPABASE_SERVICE_ROLE_KEY, SUPABASE_SERVICE_ROLE_KEY)
+
+
+async def cleanup_server_icon_objects(server_id: str):
+    client = supabase_admin()
+    prefix = f"{server_id}/"
+    limit = 1000
+    offset = 0
+    paths: list[str] = []
+
+    while True:
+        objects = await client.storage_list(
+            SERVER_ICONS_BUCKET,
+            prefix,
+            limit=limit,
+            offset=offset,
+        )
+        for stored_object in objects:
+            name = stored_object.get("name")
+            if name:
+                paths.append(name if name.startswith(prefix) else f"{prefix}{name}")
+        if len(objects) < limit:
+            break
+        offset += limit
+
+    for start in range(0, len(paths), 100):
+        await client.storage_remove(SERVER_ICONS_BUCKET, paths[start:start + 100])
+
+
+def validate_server_icon_content(content: bytes) -> tuple[str, str]:
+    if not content:
+        raise HTTPException(status_code=400, detail="The selected image is empty.")
+    if len(content) > SERVER_ICON_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Server icons must be 2 MB or smaller.")
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(content)) as image:
+                image_format = image.format
+                image.verify()
+            with Image.open(io.BytesIO(content)) as image:
+                image.load()
+                if not image.width or not image.height:
+                    raise ValueError("Image has invalid dimensions.")
+    except (
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        ValueError,
+        Image.DecompressionBombWarning,
+        Image.DecompressionBombError,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="The selected file is not a readable JPEG, PNG, or WebP image.",
+        )
+
+    icon_format = SERVER_ICON_FORMATS.get(image_format)
+    if not icon_format:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a JPEG, PNG, or WebP image. Other formats are not supported.",
+        )
+    return icon_format
 
 
 async def get_current_user(authorization: str | None = Header(default=None)):
@@ -648,6 +943,206 @@ async def update_server(server_id: str, request: ServerUpdateRequest, user=Depen
     return {"success": True, "server": server}
 
 
+@app.post("/api/servers/{server_id}/leave")
+async def leave_server(server_id: uuid.UUID, user=Depends(get_current_user)):
+    """Remove only the caller's non-owner membership and active voice presence."""
+    canonical_server_id = str(server_id)
+    client = user["supabase_user"]
+    role = await require_server_permission(
+        client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    server = await get_server(client, canonical_server_id)
+    if role == "owner" or server.get("owner_id") == user["id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Transfer ownership or delete the server before leaving.",
+        )
+
+    # Remove live media presence first. If cleanup fails, membership remains and
+    # the caller can safely retry instead of leaving a stale participant row.
+    try:
+        await cleanup_voice_presence(
+            supabase_admin(),
+            canonical_server_id,
+            user["id"],
+        )
+    except Exception as cleanup_error:
+        print(
+            "[LEAVE-SERVER] Voice presence cleanup failed "
+            f"server_id={canonical_server_id} user_id={user['id']} "
+            f"error={type(cleanup_error).__name__}"
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Could not leave the server safely. Please try again.",
+        ) from cleanup_error
+
+    await client.rpc("leave_server", {"p_server_id": canonical_server_id})
+    _audit("leave_server", canonical_server_id, user["id"], success=True)
+    return {"success": True, "server_id": canonical_server_id}
+
+
+@app.delete("/api/messages/{message_id}")
+async def delete_own_message(message_id: uuid.UUID, user=Depends(get_current_user)):
+    """Delete an authored message after backend-only attachment cleanup."""
+    client = user["supabase_user"]
+    canonical_message_id = str(message_id)
+
+    target_rows = await client.rpc(
+        "prepare_own_message_deletion",
+        {"p_message_id": canonical_message_id},
+    )
+    try:
+        targets = parse_message_deletion_targets(
+            target_rows,
+            expected_user_id=user["id"],
+        )
+    except LifecycleTargetError as target_error:
+        print(
+            "[MESSAGE-DELETE] Rejected unsafe cleanup metadata "
+            f"message_id={canonical_message_id}"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="The message attachment could not be cleaned up safely.",
+        ) from target_error
+
+    if targets:
+        try:
+            await supabase_admin().storage_remove(
+                CHANNEL_FILES_BUCKET,
+                [target.storage_path for target in targets],
+            )
+        except Exception as cleanup_error:
+            print(
+                "[MESSAGE-DELETE] Storage cleanup failed "
+                f"message_id={canonical_message_id} "
+                f"error={type(cleanup_error).__name__}"
+            )
+            # The database mutation has not run. The message stays visible and
+            # the operation is safe to retry.
+            raise HTTPException(
+                status_code=502,
+                detail="The attachment could not be removed. The message was not deleted.",
+            ) from cleanup_error
+
+    deleted = await client.rpc(
+        "delete_own_message",
+        {"p_message_id": canonical_message_id},
+    )
+    return {
+        "success": True,
+        "message_id": canonical_message_id,
+        "deleted": bool(deleted),
+    }
+
+
+async def update_server_icon_path(
+    client: SupabaseRestClient,
+    server_id: str,
+    icon_path: str | None,
+):
+    update_error = None
+    try:
+        rows = await client.rest(
+            "PATCH",
+            "servers",
+            params={"id": f"eq.{server_id}"},
+            json_body={"icon_path": icon_path},
+            prefer="return=representation",
+        )
+        if rows:
+            return rows[0]
+    except HTTPException as error:
+        update_error = error
+        rows = None
+
+    # A network response can be lost after Postgres commits. Confirm the
+    # caller-RLS-protected row before deciding whether Storage needs rollback.
+    confirmation = await get_server(client, server_id)
+    if confirmation.get("icon_path") == icon_path:
+        return confirmation
+    if rows is not None:
+        raise HTTPException(status_code=403, detail="The server icon update was not accepted.")
+    raise update_error or HTTPException(
+        status_code=500,
+        detail="The server icon update could not be confirmed.",
+    )
+
+
+@app.put("/api/servers/{server_id}/icon")
+async def upload_server_icon(
+    server_id: str,
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    client = user["supabase_user"]
+    await require_server_permission(client, server_id, user["id"], "manage_server")
+    current_server = await get_server(client, server_id)
+
+    try:
+        content = await file.read(SERVER_ICON_MAX_BYTES + 1)
+    finally:
+        await file.close()
+    extension, content_type = validate_server_icon_content(content)
+
+    new_icon_path = f"{server_id}/{uuid.uuid4()}.{extension}"
+    old_icon_path = current_server.get("icon_path")
+    storage = supabase_admin()
+
+    try:
+        await storage.storage_upload(
+            SERVER_ICONS_BUCKET,
+            new_icon_path,
+            content,
+            content_type,
+        )
+    except Exception as upload_error:
+        print(f"[SERVER-ICON-UPLOAD] Storage upload failed for server {server_id}: {upload_error}")
+        raise HTTPException(status_code=502, detail="The server icon could not be uploaded.")
+
+    try:
+        server = await update_server_icon_path(client, server_id, new_icon_path)
+    except Exception:
+        try:
+            await storage.storage_remove(SERVER_ICONS_BUCKET, [new_icon_path])
+        except Exception as cleanup_error:
+            print(f"[SERVER-ICON-CLEANUP] Upload rollback failed for server {server_id}: {cleanup_error}")
+        raise
+
+    if old_icon_path and old_icon_path != new_icon_path:
+        try:
+            await storage.storage_remove(SERVER_ICONS_BUCKET, [old_icon_path])
+        except Exception as cleanup_error:
+            print(f"[SERVER-ICON-CLEANUP] Old icon cleanup failed for server {server_id}: {cleanup_error}")
+
+    _audit("update_server_icon", server_id, user["id"], success=True)
+    return {"success": True, "server": server, "icon_path": server.get("icon_path")}
+
+
+@app.delete("/api/servers/{server_id}/icon")
+async def remove_server_icon(server_id: str, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    await require_server_permission(client, server_id, user["id"], "manage_server")
+    current_server = await get_server(client, server_id)
+    old_icon_path = current_server.get("icon_path")
+
+    if not old_icon_path:
+        return {"success": True, "server": current_server, "icon_path": None}
+
+    server = await update_server_icon_path(client, server_id, None)
+    try:
+        await supabase_admin().storage_remove(SERVER_ICONS_BUCKET, [old_icon_path])
+    except Exception as cleanup_error:
+        print(f"[SERVER-ICON-CLEANUP] Removed icon cleanup failed for server {server_id}: {cleanup_error}")
+
+    _audit("remove_server_icon", server_id, user["id"], success=True)
+    return {"success": True, "server": server, "icon_path": None}
+
+
 @app.post("/api/servers/{server_id}/regenerate-invite")
 async def regenerate_invite(server_id: str, user=Depends(get_current_user)):
     client = user["supabase_user"]
@@ -671,31 +1166,423 @@ async def delete_server(server_id: str, user=Depends(get_current_user)):
     if actor_role != "owner":
         raise HTTPException(status_code=403, detail="Only the server owner can delete this server.")
     await client.rest("DELETE", "servers", params={"id": f"eq.{server_id}"})
+    try:
+        await cleanup_server_icon_objects(server_id)
+    except Exception as cleanup_error:
+        print(f"[SERVER-ICON-CLEANUP] Failed for server {server_id}: {cleanup_error}")
     _audit("delete_server", server_id, user["id"], success=True)
     return {"success": True, "message": "Server deleted."}
+
+
+# =====================================================================
+# RAG 2 RESOURCE FOUNDATION
+# =====================================================================
+
+@app.get(
+    "/api/rag2/servers/{server_id}/resources",
+    response_model=list[ServerResourceSummary],
+)
+async def rag2_server_resources(
+    server_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    user=Depends(get_current_user),
+):
+    client = user["supabase_user"]
+    canonical_server_id = str(server_id)
+    await require_server_permission(
+        client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    return await list_server_resources(
+        client,
+        canonical_server_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.post(
+    "/api/rag2/servers/{server_id}/resources/channel-metadata",
+    response_model=list[ChannelResourceCardMetadata],
+)
+async def rag2_channel_resource_metadata(
+    server_id: uuid.UUID,
+    request: ChannelResourceMetadataRequest,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    canonical_server_id = str(server_id)
+    await require_server_permission(
+        caller_client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    try:
+        return await get_channel_resource_metadata(
+            caller_client,
+            canonical_server_id,
+            [str(resource_id) for resource_id in request.resource_ids],
+        )
+    except Rag2ChannelResourceError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+
+async def _prepare_rag2_indexing(
+    caller_client,
+    resource,
+    user_id: str,
+    *,
+    accept_existing: bool,
+) -> bool:
+    """Apply the manual indexing authorization and lifecycle rules once."""
+    role = await get_server_member_role(
+        caller_client,
+        resource.server_id,
+        user_id,
+    )
+    if not role:
+        raise HTTPException(
+            status_code=403,
+            detail="Current server membership is required.",
+        )
+    if (
+        resource.uploader_id != user_id
+        and "manage_server" not in PERMISSIONS.get(role, set())
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the uploader or a server manager may index this resource.",
+        )
+    if (
+        resource.visibility != "server"
+        or resource.storage_bucket != "channel-files"
+        or not has_safe_canonical_storage_path(resource.storage_path)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="This resource is not supported for RAG 2 indexing.",
+        )
+    if resource.index_status == "ready":
+        if accept_existing:
+            return False
+        raise HTTPException(status_code=409, detail="The resource is already indexed.")
+    if resource.index_status == "processing":
+        try:
+            started_at = datetime.fromisoformat(
+                str(resource.index_started_at).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=409,
+                detail="The resource has an invalid active indexing state.",
+            )
+        if started_at >= datetime.now(timezone.utc) - timedelta(minutes=30):
+            if accept_existing:
+                return False
+            raise HTTPException(
+                status_code=409,
+                detail="Resource indexing is already in progress.",
+            )
+    elif resource.index_status not in {"unindexed", "failed"}:
+        raise HTTPException(
+            status_code=409,
+            detail="The resource indexing state is not currently supported.",
+        )
+    return True
+
+
+async def _run_automatic_rag2_indexing(resource) -> None:
+    """Isolate semantic enrichment failure from the committed attachment."""
+    try:
+        await index_authorized_resource(resource, supabase_admin())
+    except Rag2IndexingError as error:
+        print(
+            "[RAG2-AUTO] indexing did not complete "
+            f"resource_id={resource.id} status={error.status_code}"
+        )
+    except Exception as error:
+        print(
+            "[RAG2-AUTO] indexing did not complete "
+            f"resource_id={resource.id} error={type(error).__name__}"
+        )
+
+
+@app.post(
+    "/api/rag2/attachments/{attachment_id}/ingest",
+    response_model=Rag2AutomaticIngestionResponse,
+    status_code=202,
+)
+async def rag2_automatically_ingest_attachment(
+    attachment_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    try:
+        resource_id = await register_attachment_for_rag2(
+            caller_client,
+            str(attachment_id),
+        )
+        resource = await resolve_authorized_resource(
+            caller_client,
+            resource_id,
+        )
+    except Rag2AutomaticIngestionError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    except Rag2IndexingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+    should_schedule = await _prepare_rag2_indexing(
+        caller_client,
+        resource,
+        user["id"],
+        accept_existing=True,
+    )
+    if should_schedule:
+        background_tasks.add_task(
+            _run_automatic_rag2_indexing,
+            resource,
+        )
+    return Rag2AutomaticIngestionResponse(
+        resource_id=resource_id,
+        indexing_scheduled=should_schedule,
+    )
+
+
+@app.get("/api/rag2/resources/{resource_id}/access")
+async def rag2_access_resource(
+    resource_id: uuid.UUID,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    try:
+        resource = await authorize_resource_for_access(
+            caller_client,
+            str(resource_id),
+            user["id"],
+            require_server_permission,
+        )
+    except Rag2ResourceAccessError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+    # Privileged Storage access is constructed only after caller-scoped
+    # resolution, current membership, scope, and canonical path validation.
+    try:
+        trusted_client = supabase_admin()
+        payload = await download_resource_for_access(
+            resource,
+            trusted_client,
+        )
+    except Rag2ResourceAccessError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to open this resource.",
+        ) from error
+    disposition = "inline" if payload.inline else "attachment"
+    return Response(
+        content=payload.content,
+        media_type=payload.media_type,
+        headers={
+            "Content-Disposition": (
+                f'{disposition}; filename="{payload.filename}"'
+            ),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.post(
+    "/api/rag2/resources/{resource_id}/index",
+    response_model=Rag2IndexingResponse,
+)
+async def rag2_index_resource(
+    resource_id: uuid.UUID,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    try:
+        resource = await resolve_authorized_resource(
+            caller_client,
+            str(resource_id),
+        )
+    except Rag2IndexingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+    await _prepare_rag2_indexing(
+        caller_client,
+        resource,
+        user["id"],
+        accept_existing=False,
+    )
+
+    # Trusted access is deliberately constructed only after caller-scoped
+    # resolution, current membership, authority, scope, and state checks.
+    trusted_client = supabase_admin()
+    try:
+        result = await index_authorized_resource(resource, trusted_client)
+    except Rag2IndexingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    return Rag2IndexingResponse(
+        resource_id=result.resource_id,
+        server_id=result.server_id,
+        detected_type=result.detected_type,
+        chunk_count=result.chunk_count,
+        embedding_model=EMBEDDING_MODEL,
+        embedding_dimensions=EMBEDDING_DIMENSIONS,
+        indexed_at=result.indexed_at,
+    )
+
+
+@app.post(
+    "/api/rag2/servers/{server_id}/search",
+    response_model=Rag2SearchResponse,
+)
+async def rag2_search_server(
+    server_id: uuid.UUID,
+    request: Rag2SearchRequest,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    canonical_server_id = str(server_id)
+
+    # Membership authorization deliberately precedes provider usage.
+    await require_server_permission(
+        caller_client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    try:
+        results = await search_server_chunks(
+            caller_client,
+            canonical_server_id,
+            request.query,
+            limit=request.limit,
+        )
+    except Rag2SearchError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    return Rag2SearchResponse(
+        server_id=server_id,
+        query=request.query,
+        results=results,
+    )
+
+
+@app.post(
+    "/api/rag2/servers/{server_id}/resources/search",
+    response_model=Rag2ResourceSearchResponse,
+)
+async def rag2_search_server_resources(
+    server_id: uuid.UUID,
+    request: Rag2ResourceSearchRequest,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    canonical_server_id = str(server_id)
+
+    # Membership authorization deliberately precedes provider usage.
+    await require_server_permission(
+        caller_client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    try:
+        results = await search_server_resources(
+            caller_client,
+            canonical_server_id,
+            request.query,
+            limit=request.limit,
+        )
+    except Rag2ResourceSearchError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    return Rag2ResourceSearchResponse(
+        server_id=server_id,
+        query=request.query,
+        results=results,
+    )
+
+
+@app.put(
+    "/api/rag2/resources/{resource_id}/rating",
+    response_model=Rag2RatingSummary,
+)
+async def rag2_set_resource_rating(
+    resource_id: uuid.UUID,
+    request: Rag2RatingRequest,
+    user=Depends(get_current_user),
+):
+    try:
+        return await set_resource_rating(
+            user["supabase_user"],
+            str(resource_id),
+            request.rating,
+        )
+    except Rag2RatingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+
+@app.delete(
+    "/api/rag2/resources/{resource_id}/rating",
+    response_model=Rag2RatingSummary,
+)
+async def rag2_delete_resource_rating(
+    resource_id: uuid.UUID,
+    user=Depends(get_current_user),
+):
+    try:
+        return await delete_resource_rating(
+            user["supabase_user"],
+            str(resource_id),
+        )
+    except Rag2RatingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
 
 
 # =====================================================================
 # CACHING
 # =====================================================================
 
-# In-memory caches: keyed by (doc_id, cache_type[, question_hash])
+# In-memory generated-result cache, isolated by authenticated user and document.
 _generation_cache: dict[str, dict] = {}
 
 
-def _cache_key(doc_id: str, cache_type: str, extra: str = "") -> str:
+def _cache_key(
+    user_id: str,
+    doc_id: str,
+    cache_type: str,
+    extra: str = "",
+) -> str:
     """Generate a deterministic cache key."""
-    raw = f"{doc_id}:{cache_type}:{extra}"
+    raw = f"{user_id}:{doc_id}:{cache_type}:{extra}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _get_cached(doc_id: str, cache_type: str, extra: str = ""):
-    key = _cache_key(doc_id, cache_type, extra)
+def _get_cached(
+    user_id: str,
+    doc_id: str,
+    cache_type: str,
+    extra: str = "",
+):
+    key = _cache_key(user_id, doc_id, cache_type, extra)
     return _generation_cache.get(key)
 
 
-def _set_cached(doc_id: str, cache_type: str, value, extra: str = ""):
-    key = _cache_key(doc_id, cache_type, extra)
+def _set_cached(
+    user_id: str,
+    doc_id: str,
+    cache_type: str,
+    value,
+    extra: str = "",
+):
+    key = _cache_key(user_id, doc_id, cache_type, extra)
     _generation_cache[key] = value
 
 
@@ -763,46 +1650,6 @@ async def get_turn_credentials():
 # STUDYCORD BASIC RAG MVP ENDPOINTS
 # =====================================================================
 
-# In-memory store: doc_id -> { "db": FAISS, "text": str, "filename": str }
-vector_stores = {}
-
-async def extract_text_from_file(file: UploadFile) -> str:
-    filename = file.filename
-    content = await file.read()
-    ext = filename.split(".")[-1].lower()
-    
-    if ext == "txt":
-        return content.decode("utf-8", errors="ignore")
-    
-    elif ext == "pdf":
-        from pypdf import PdfReader
-        pdf_file = io.BytesIO(content)
-        reader = PdfReader(pdf_file)
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        return text
-        
-    elif ext == "docx":
-        import docx
-        docx_file = io.BytesIO(content)
-        doc = docx.Document(docx_file)
-        text = ""
-        for p in doc.paragraphs:
-            if p.text:
-                text += p.text + "\n"
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = [cell.text for cell in row.cells if cell.text]
-                if row_text:
-                    text += " | ".join(row_text) + "\n"
-        return text
-    
-    else:
-        raise ValueError(f"Unsupported file format: {ext}")
-
 def parse_json_from_response(content: str):
     # Try direct parse
     try:
@@ -829,94 +1676,279 @@ def parse_json_from_response(content: str):
             
     raise ValueError("Response could not be parsed as valid JSON.")
 
+class ChatHistoryMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str
+    content: str = Field(
+        min_length=1,
+        max_length=RAG_CHAT_MESSAGE_MAX_CHARS,
+    )
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value: str) -> str:
+        if value not in {"user", "assistant"}:
+            raise ValueError("History role must be user or assistant.")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def trim_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("History content must not be blank.")
+        return value.strip()
+
+
 class ChatRequest(BaseModel):
-    question: str
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(
+        min_length=1,
+        max_length=RAG_CHAT_QUESTION_MAX_CHARS,
+    )
     mode: str = "chat"
-    doc_id: str
+    doc_id: str = Field(
+        validation_alias=AliasChoices("document_id", "doc_id"),
+    )
+    history: list[ChatHistoryMessage] = Field(
+        default_factory=list,
+        max_length=RAG_CHAT_HISTORY_LIMIT,
+    )
+
+    @field_validator("question")
+    @classmethod
+    def trim_question(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Question must not be blank.")
+        return value.strip()
 
 class DocRequest(BaseModel):
     doc_id: str
 
+
+class Rag1HandoffResponse(BaseModel):
+    status: str = "success"
+    doc_id: uuid.UUID
+    session_id: uuid.UUID
+    filename: str
+    detected_type: Literal["pdf", "docx", "txt"]
+    reused: bool
+
+
+def _resolve_request_document(user_id: str, document_id: str):
+    try:
+        return resolve_rag_document(user_id, document_id)
+    except RagDocumentResolutionError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.detail,
+        ) from error
+
+
 @app.post("/api/rag/upload")
-async def rag_upload(file: UploadFile = File(...)):
+async def rag_upload(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
     if not os.getenv("GOOGLE_API_KEY"):
         raise HTTPException(
             status_code=400,
             detail="GEMINI_API_KEY is not configured on the backend. Please add it to Backend/.env"
         )
-        
+
     try:
-        text = await extract_text_from_file(file)
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="The uploaded file contains no readable text.")
-            
-        # Split text into chunks
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunks = text_splitter.split_text(text)
-        
-        # Convert to Documents
-        documents = [Document(page_content=chunk, metadata={"source": file.filename}) for chunk in chunks]
-        
-        # Embeddings and FAISS — still using Gemini embeddings
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
-        db = FAISS.from_documents(documents, embeddings)
-        
-        doc_id = str(uuid.uuid4())
-        vector_stores[doc_id] = {
-            "db": db,
-            "text": text,
-            "filename": file.filename
-        }
-        
+        result = await ingest_rag_document(file, user["id"])
+        session = create_study_session(
+            user["id"],
+            result.doc_id,
+            result.filename,
+        )
+        cache_rag_document(
+            user["id"],
+            result.doc_id,
+            result.vector_store,
+            result.text,
+            result.filename,
+        )
         return {
             "status": "success",
-            "doc_id": doc_id,
-            "filename": file.filename,
-            "num_chunks": len(chunks)
+            "doc_id": result.doc_id,
+            "session_id": session.id,
+            "filename": result.filename,
+            "num_chunks": result.chunk_count,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"[RAG-UPLOAD] Error processing document: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+    except RagIngestionError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail)
+    except Exception as error:
+        print(f"[RAG-UPLOAD] Unexpected error: {type(error).__name__}")
+        raise HTTPException(status_code=500, detail="Failed to process document.")
+
+
+@app.post(
+    "/api/rag1/imports/rag2/{resource_id}",
+    response_model=Rag1HandoffResponse,
+)
+async def rag1_import_rag2_resource(
+    resource_id: uuid.UUID,
+    response: Response,
+    user=Depends(get_current_user),
+):
+    try:
+        result = await handoff_rag2_resource_to_rag1(
+            caller_client=user["supabase_user"],
+            user_id=user["id"],
+            resource_id=str(resource_id),
+            require_permission=require_server_permission,
+            trusted_client_factory=supabase_admin,
+        )
+    except Rag1HandoffError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    response.status_code = 200 if result.reused else 201
+    return Rag1HandoffResponse(
+        doc_id=result.doc_id,
+        session_id=result.session_id,
+        filename=result.filename,
+        detected_type=result.detected_type,
+        reused=result.reused,
+    )
+
+
+@app.get("/api/rag/sessions")
+async def rag_session_history(user=Depends(get_current_user)):
+    try:
+        sessions = list_study_sessions(user["id"])
+        return [session_response(session) for session in sessions]
+    except Exception as error:
+        print(f"[RAG-SESSIONS] List failed: {type(error).__name__}")
+        raise HTTPException(
+            status_code=500,
+            detail="Study history could not be loaded.",
+        ) from error
+
+
+@app.get("/api/rag/sessions/{session_id}")
+async def rag_open_session(
+    session_id: str,
+    user=Depends(get_current_user),
+):
+    try:
+        session = open_study_session(user["id"], session_id)
+        return session_response(session)
+    except RagSessionError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.detail,
+        ) from error
+    except Exception as error:
+        print(f"[RAG-SESSIONS] Open failed: {type(error).__name__}")
+        raise HTTPException(
+            status_code=500,
+            detail="Study session could not be opened.",
+        ) from error
 
 
 @app.post("/api/rag/chat")
-async def rag_chat(request: ChatRequest):
+async def rag_chat(
+    request: ChatRequest,
+    user=Depends(get_current_user),
+):
     endpoint = "RAG-CHAT"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, question='{request.question[:80]}...'")
+    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}")
     start_time = time.time()
 
-    doc_data = vector_stores.get(request.doc_id)
-    if not doc_data:
-        raise HTTPException(status_code=404, detail="Document not found or expired. Please upload it again.")
+    doc_data = _resolve_request_document(user["id"], request.doc_id)
+    cache_extra = conversation_cache_extra(
+        request.history,
+        request.question,
+    )
 
     # Check cache for repeated chat questions
-    cached = _get_cached(request.doc_id, "chat", request.question)
+    cached = _get_cached(
+        doc_data.metadata.user_id,
+        doc_data.metadata.id,
+        "chat",
+        cache_extra,
+    )
     if cached is not None:
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
         return cached
 
     try:
-        db = doc_data["db"]
-        docs = db.similarity_search(request.question, k=4)
+        retrieval_query = request.question
+        contextualization_used = False
+        contextualization_fallback = False
+        if request.history:
+            try:
+                contextualizer = get_rag_chat_model(temperature=0)
+                rewrite_response = await contextualizer.ainvoke(
+                    build_contextualization_messages(
+                        request.history,
+                        request.question,
+                    )
+                )
+                rewritten_query = usable_retrieval_query(
+                    rewrite_response.content
+                )
+                if rewritten_query is None:
+                    contextualization_fallback = True
+                else:
+                    retrieval_query = rewritten_query
+                    contextualization_used = True
+            except Exception as rewrite_error:
+                contextualization_fallback = True
+                print(
+                    f"[{endpoint}] Contextualization fallback - "
+                    f"error={type(rewrite_error).__name__}"
+                )
+
+        print(
+            f"[{endpoint}] Context - "
+            f"history_message_count={len(request.history)}, "
+            f"contextualization_used={contextualization_used}, "
+            f"fallback={contextualization_fallback}"
+        )
+
+        db = doc_data.vector_store
+        docs = db.similarity_search(retrieval_query, k=RAG_RETRIEVAL_K)
         context = "\n\n".join([doc.page_content for doc in docs])
         
         chat = get_rag_chat_model(temperature=0.3)
-        prompt = (
-            f"You are an AI Study Assistant for StudyCord. Answer the student's question based strictly on the provided document context. "
-            f"If the answer cannot be found in the context, you may use your general knowledge to answer, but state clearly that it is not explicitly mentioned in the document.\n\n"
-            f"Document Context:\n{context}\n\n"
-            f"Student Question: {request.question}\n\n"
-            f"Helpful Answer:"
+        prompt = build_grounded_answer_messages(
+            context,
+            request.history,
+            request.question,
         )
         
-        response = await chat.ainvoke(prompt)
-        result = {"answer": response.content}
+        try:
+            answer = await generate_grounded_answer(chat, prompt)
+        except RagChatProviderResponseError as provider_response_error:
+            response_kind = (
+                "blocked"
+                if provider_response_error.blocked
+                else "malformed"
+            )
+            print(
+                f"[{endpoint}] Provider response rejected - "
+                f"kind={response_kind}"
+            )
+            raise HTTPException(
+                status_code=(
+                    422 if provider_response_error.blocked else 502
+                ),
+                detail="Unable to generate an answer for this request.",
+            ) from provider_response_error
+        result = {"answer": answer}
 
         # Cache the result
-        _set_cached(request.doc_id, "chat", result, request.question)
+        _set_cached(
+            doc_data.metadata.user_id,
+            doc_data.metadata.id,
+            "chat",
+            result,
+            cache_extra,
+        )
 
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
@@ -929,24 +1961,32 @@ async def rag_chat(request: ChatRequest):
 
 
 @app.post("/api/rag/summary")
-async def rag_summary(request: DocRequest):
+async def rag_summary(
+    request: DocRequest,
+    user=Depends(get_current_user),
+):
     endpoint = "RAG-SUMMARY"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
     start_time = time.time()
 
-    doc_data = vector_stores.get(request.doc_id)
-    if not doc_data:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    doc_data = _resolve_request_document(user["id"], request.doc_id)
+    print(
+        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"doc_id={doc_data.metadata.id[:12]}..."
+    )
 
     # Check cache
-    cached = _get_cached(request.doc_id, "summary")
+    cached = _get_cached(
+        doc_data.metadata.user_id,
+        doc_data.metadata.id,
+        "summary",
+    )
     if cached is not None:
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
         return cached
 
     try:
-        text = doc_data["text"][:50000]  # truncate to stay within safe prompt length
+        text = doc_data.text[:50000]  # truncate to stay within safe prompt length
         chat = get_rag_chat_model(temperature=0.2)
         
         prompt = (
@@ -970,7 +2010,12 @@ async def rag_summary(request: DocRequest):
         parsed_json = parse_json_from_response(response.content)
 
         # Cache the result
-        _set_cached(request.doc_id, "summary", parsed_json)
+        _set_cached(
+            doc_data.metadata.user_id,
+            doc_data.metadata.id,
+            "summary",
+            parsed_json,
+        )
 
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
@@ -986,24 +2031,32 @@ async def rag_summary(request: DocRequest):
 
 
 @app.post("/api/rag/flashcards")
-async def rag_flashcards(request: DocRequest):
+async def rag_flashcards(
+    request: DocRequest,
+    user=Depends(get_current_user),
+):
     endpoint = "RAG-FLASHCARDS"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
     start_time = time.time()
 
-    doc_data = vector_stores.get(request.doc_id)
-    if not doc_data:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    doc_data = _resolve_request_document(user["id"], request.doc_id)
+    print(
+        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"doc_id={doc_data.metadata.id[:12]}..."
+    )
 
     # Check cache
-    cached = _get_cached(request.doc_id, "flashcards")
+    cached = _get_cached(
+        doc_data.metadata.user_id,
+        doc_data.metadata.id,
+        "flashcards",
+    )
     if cached is not None:
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
         return cached
 
     try:
-        text = doc_data["text"][:50000]
+        text = doc_data.text[:50000]
         chat = get_rag_chat_model(temperature=0.3)
         
         prompt = (
@@ -1021,7 +2074,12 @@ async def rag_flashcards(request: DocRequest):
         result = {"flashcards": parsed_json}
 
         # Cache the result
-        _set_cached(request.doc_id, "flashcards", result)
+        _set_cached(
+            doc_data.metadata.user_id,
+            doc_data.metadata.id,
+            "flashcards",
+            result,
+        )
 
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
@@ -1037,24 +2095,32 @@ async def rag_flashcards(request: DocRequest):
 
 
 @app.post("/api/rag/mcq")
-async def rag_mcq(request: DocRequest):
+async def rag_mcq(
+    request: DocRequest,
+    user=Depends(get_current_user),
+):
     endpoint = "RAG-MCQ"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, doc_id={request.doc_id[:12]}...")
     start_time = time.time()
 
-    doc_data = vector_stores.get(request.doc_id)
-    if not doc_data:
-        raise HTTPException(status_code=404, detail="Document not found.")
+    doc_data = _resolve_request_document(user["id"], request.doc_id)
+    print(
+        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"doc_id={doc_data.metadata.id[:12]}..."
+    )
 
     # Check cache
-    cached = _get_cached(request.doc_id, "mcq")
+    cached = _get_cached(
+        doc_data.metadata.user_id,
+        doc_data.metadata.id,
+        "mcq",
+    )
     if cached is not None:
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — CACHE HIT")
         return cached
 
     try:
-        text = doc_data["text"][:50000]
+        text = doc_data.text[:50000]
         chat = get_rag_chat_model(temperature=0.3)
         
         prompt = (
@@ -1077,7 +2143,12 @@ async def rag_mcq(request: DocRequest):
         result = {"mcqs": parsed_json}
 
         # Cache the result
-        _set_cached(request.doc_id, "mcq", result)
+        _set_cached(
+            doc_data.metadata.user_id,
+            doc_data.metadata.id,
+            "mcq",
+            result,
+        )
 
         elapsed = time.time() - start_time
         print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
