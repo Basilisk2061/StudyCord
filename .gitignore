@@ -6,3 +6,7 @@ venv/
 .venv/
 Backend/.env
 Backend/data/rag1/
+Backend/evaluation/results/*.json
+Backend/evaluation/results/*.csv
+Backend/evaluation/datasets/local/
+Backend/evaluation/workspace/

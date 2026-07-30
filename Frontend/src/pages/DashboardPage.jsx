@@ -4,6 +4,7 @@ import { useAuth } from '../lib/AuthContext';
 import ServerSidebar from '../components/ServerSidebar';
 import ChannelSidebar from '../components/ChannelSidebar';
 import MainPanel from '../components/MainPanel';
+import AdvancedSearchPanel from '../components/AdvancedSearchPanel';
 import VoicePanel from '../components/VoicePanel';
 import RightPanel from '../components/RightPanel';
 import { useVoiceSession } from '../hooks/useVoiceSession';
@@ -77,6 +78,7 @@ export default function DashboardPage() {
   const [activeChannelId, setActiveChannelId] = useState(null);
   const [activeChannelName, setActiveChannelName] = useState(null);
   const [activeChannelType, setActiveChannelType] = useState(null);
+  const [workspace, setWorkspace] = useState('channel');
 
   // ---------- layout ----------
   const [channelSidebarOpen, setChannelSidebarOpen] = useState(true);
@@ -318,6 +320,7 @@ export default function DashboardPage() {
       setActiveChannelId(null);
       setActiveChannelName(null);
       setActiveChannelType(null);
+      setWorkspace('channel');
 
       return { success: true };
     } catch (err) {
@@ -396,6 +399,7 @@ export default function DashboardPage() {
       setActiveChannelId(null);
       setActiveChannelName(null);
       setActiveChannelType(null);
+      setWorkspace('channel');
 
       return { success: true, message: data.message };
     } catch (err) {
@@ -409,6 +413,7 @@ export default function DashboardPage() {
     setActiveChannelId(null);
     setActiveChannelName(null);
     setActiveChannelType(null);
+    setWorkspace('channel');
     setMobilePanelView('sidebar');
   };
 
@@ -416,6 +421,17 @@ export default function DashboardPage() {
     setActiveChannelId(channelId);
     setActiveChannelName(channelName);
     setActiveChannelType(channelType);
+    setWorkspace('channel');
+    setMobilePanelView('chat');
+  };
+
+  const handleOpenAdvancedSearch = () => {
+    setWorkspace('advanced-search');
+    setMobilePanelView('chat');
+  };
+
+  const handleOpenResource = () => {
+    setWorkspace('resource');
     setMobilePanelView('chat');
   };
 
@@ -443,6 +459,7 @@ export default function DashboardPage() {
       setActiveChannelId(null);
       setActiveChannelName(null);
       setActiveChannelType(null);
+      setWorkspace('channel');
       leaveVoiceSession?.();
     }
   }, [activeServerId, leaveVoiceSession]);
@@ -523,8 +540,25 @@ export default function DashboardPage() {
         voiceSession={voiceSession}
         currentRole={currentRole}
         onOpenSettings={() => setSettingsOpen(true)}
+        workspace={workspace}
+        onOpenAdvancedSearch={handleOpenAdvancedSearch}
       />
-      {activeChannelType === 'voice' ? (
+      {workspace === 'advanced-search' || workspace === 'resource' ? (
+        <AdvancedSearchPanel
+          key={activeServerId}
+          serverId={activeServerId}
+          serverName={activeServerName}
+          userEmail={user?.email}
+          profile={profile}
+          onLogout={handleLogout}
+          channelSidebarOpen={channelSidebarOpen}
+          onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
+          onMobileBack={() => setMobilePanelView('sidebar')}
+          workspace={workspace}
+          onOpenResource={handleOpenResource}
+          onBackToSearch={() => setWorkspace('advanced-search')}
+        />
+      ) : activeChannelType === 'voice' ? (
         <VoicePanel
           channelId={activeChannelId}
           channelName={activeChannelName}

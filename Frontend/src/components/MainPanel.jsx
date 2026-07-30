@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { apiRequest } from '../lib/api';
+import {
+  isRag2CandidateFilename,
+  startAutomaticRag2Ingestion,
+} from '../lib/rag2AutomaticIngestion';
 import MessageAttachment from './MessageAttachment';
 
 // ---------- constants ----------
@@ -283,7 +288,7 @@ export default function MainPanel({
 
       // ---- Create attachment row ----
       if (hasFile && msgData) {
-        const { error: attErr } = await supabase
+        const { data: attachmentData, error: attErr } = await supabase
           .from('message_attachments')
           .insert({
             message_id: msgData.id,
@@ -295,11 +300,31 @@ export default function MainPanel({
             file_type: pendingFile.type,
             file_size: pendingFile.size,
             storage_path: storagePath,
-          });
+          })
+          .select('id')
+          .single();
 
         if (attErr) {
           console.error('Failed to save attachment record:', attErr);
           // message was still sent, just no attachment record
+        } else if (
+          attachmentData?.id
+          && isRag2CandidateFilename(pendingFile.name)
+        ) {
+          // The attachment is already committed. Semantic enrichment is a
+          // detached secondary operation and cannot fail the sent message.
+          startAutomaticRag2Ingestion(
+            apiRequest,
+            attachmentData.id,
+            {
+              onFailure: (error) => {
+                console.warn(
+                  '[RAG2-AUTO] Semantic enrichment did not start.',
+                  { status: error?.status || 'unknown' },
+                );
+              },
+            },
+          );
         }
       }
 

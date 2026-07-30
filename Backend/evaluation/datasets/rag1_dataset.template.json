@@ -1,0 +1,6 @@
+{
+  "dataset_name": "replace-with-evaluation-name",
+  "ground_truth_type": "manual",
+  "description": "Copy this file and add manually authored, document-verified cases.",
+  "cases": []
+}

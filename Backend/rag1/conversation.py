@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 RAG_CHAT_HISTORY_LIMIT = 6
 RAG_CHAT_MESSAGE_MAX_CHARS = 4_000
 RAG_CHAT_QUESTION_MAX_CHARS = 4_000
+RAG_RETRIEVAL_K = 4
 
 
 def conversation_payload(history: Sequence[object]) -> list[dict[str, str]]:

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 # pyrefly: ignore [missing-import]
 import httpx
 # pyrefly: ignore [missing-import]
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 # pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
 # pyrefly: ignore [missing-import]
@@ -23,8 +23,9 @@ import re
 import io
 import secrets
 import string
-from datetime import datetime, timezone
-from fastapi import UploadFile, File, Header, Depends
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
+from fastapi import UploadFile, File, Header, Depends, Query
 # pyrefly: ignore [missing-import]
 from PIL import Image, UnidentifiedImageError
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
@@ -39,6 +40,7 @@ from rag1.conversation import (
     RAG_CHAT_HISTORY_LIMIT,
     RAG_CHAT_MESSAGE_MAX_CHARS,
     RAG_CHAT_QUESTION_MAX_CHARS,
+    RAG_RETRIEVAL_K,
     build_contextualization_messages,
     build_grounded_answer_messages,
     conversation_cache_extra,
@@ -50,6 +52,37 @@ from rag1.sessions import (
     list_study_sessions,
     open_study_session,
     session_response,
+)
+from rag2 import (
+    EMBEDDING_DIMENSIONS,
+    EMBEDDING_MODEL,
+    Rag2AutomaticIngestionError,
+    Rag2AutomaticIngestionResponse,
+    Rag2IndexingError,
+    Rag2IndexingResponse,
+    Rag2RatingError,
+    Rag2RatingRequest,
+    Rag2RatingSummary,
+    Rag2ResourceAccessError,
+    Rag2ResourceSearchError,
+    Rag2ResourceSearchRequest,
+    Rag2ResourceSearchResponse,
+    Rag2SearchError,
+    Rag2SearchRequest,
+    Rag2SearchResponse,
+    ServerResourceSummary,
+    delete_resource_rating,
+    download_resource_for_access,
+    has_safe_canonical_storage_path,
+    index_authorized_resource,
+    list_server_resources,
+    register_attachment_for_rag2,
+    resolve_authorized_resource,
+    resolve_resource_for_access,
+    search_server_resources,
+    search_server_chunks,
+    set_resource_rating,
+    validate_resource_for_access,
 )
 
 # OpenRouter LLM import
@@ -299,6 +332,52 @@ class SupabaseRestClient:
             response = await client.post(url, json=payload, headers=self._headers())
         if response.status_code >= 400:
             print(f"[SUPABASE-RPC:{self.name}] {function_name} failed: {response.status_code} {response.text[:400]}")
+            if (
+                "resource is already indexed" in response.text
+                or "resource indexing is already in progress" in response.text
+                or "indexing attempt is not active" in response.text
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="The resource indexing state changed. Refresh and try again.",
+                )
+            if "resource is not supported for RAG 2 indexing" in response.text:
+                raise HTTPException(
+                    status_code=422,
+                    detail="This resource is not supported for RAG 2 indexing.",
+                )
+            if "current server membership required" in response.text:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Current server membership is required.",
+                )
+            if (
+                "query embedding is invalid" in response.text
+                or "search limit must be between 1 and 25" in response.text
+                or "candidate limit must be between 1 and 100" in response.text
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Semantic search parameters were rejected.",
+                )
+            if "rating resource not found" in response.text:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Resource not found.",
+                )
+            if (
+                "rating requires a server-visible resource" in response.text
+                or "current server membership required" in response.text
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Resource rating is not available.",
+                )
+            if "rating must be between 1 and 5" in response.text:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Rating must be between 1 and 5.",
+                )
             if "must be server owner" in response.text:
                 raise HTTPException(status_code=403, detail="Only the server owner can transfer ownership.")
             if "new owner must be a current server member" in response.text:
@@ -351,6 +430,37 @@ class SupabaseRestClient:
                 f"Storage delete failed with status {response.status_code}: {response.text[:400]}"
             )
         return response.json() if response.text else None
+
+    async def storage_download(self, bucket: str, path: str, *, max_bytes: int):
+        safe_bucket = quote(bucket, safe="")
+        safe_path = quote(path, safe="/")
+        url = (
+            f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/authenticated/"
+            f"{safe_bucket}/{safe_path}"
+        )
+        headers = {
+            "apikey": self.api_key,
+            "Authorization": f"Bearer {self.bearer_token}",
+        }
+        content = bytearray()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        f"Storage download failed with status {response.status_code}."
+                    )
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > max_bytes:
+                            raise RuntimeError("RAG2_DOWNLOAD_TOO_LARGE")
+                    except ValueError:
+                        pass
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > max_bytes:
+                        raise RuntimeError("RAG2_DOWNLOAD_TOO_LARGE")
+        return bytes(content)
 
 
 def supabase_user(access_token: str) -> SupabaseRestClient:
@@ -933,6 +1043,362 @@ async def delete_server(server_id: str, user=Depends(get_current_user)):
 
 
 # =====================================================================
+# RAG 2 RESOURCE FOUNDATION
+# =====================================================================
+
+@app.get(
+    "/api/rag2/servers/{server_id}/resources",
+    response_model=list[ServerResourceSummary],
+)
+async def rag2_server_resources(
+    server_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    user=Depends(get_current_user),
+):
+    client = user["supabase_user"]
+    canonical_server_id = str(server_id)
+    await require_server_permission(
+        client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    return await list_server_resources(
+        client,
+        canonical_server_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+async def _prepare_rag2_indexing(
+    caller_client,
+    resource,
+    user_id: str,
+    *,
+    accept_existing: bool,
+) -> bool:
+    """Apply the manual indexing authorization and lifecycle rules once."""
+    role = await get_server_member_role(
+        caller_client,
+        resource.server_id,
+        user_id,
+    )
+    if not role:
+        raise HTTPException(
+            status_code=403,
+            detail="Current server membership is required.",
+        )
+    if (
+        resource.uploader_id != user_id
+        and "manage_server" not in PERMISSIONS.get(role, set())
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the uploader or a server manager may index this resource.",
+        )
+    if (
+        resource.visibility != "server"
+        or resource.storage_bucket != "channel-files"
+        or not has_safe_canonical_storage_path(resource.storage_path)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="This resource is not supported for RAG 2 indexing.",
+        )
+    if resource.index_status == "ready":
+        if accept_existing:
+            return False
+        raise HTTPException(status_code=409, detail="The resource is already indexed.")
+    if resource.index_status == "processing":
+        try:
+            started_at = datetime.fromisoformat(
+                str(resource.index_started_at).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=409,
+                detail="The resource has an invalid active indexing state.",
+            )
+        if started_at >= datetime.now(timezone.utc) - timedelta(minutes=30):
+            if accept_existing:
+                return False
+            raise HTTPException(
+                status_code=409,
+                detail="Resource indexing is already in progress.",
+            )
+    elif resource.index_status not in {"unindexed", "failed"}:
+        raise HTTPException(
+            status_code=409,
+            detail="The resource indexing state is not currently supported.",
+        )
+    return True
+
+
+async def _run_automatic_rag2_indexing(resource) -> None:
+    """Isolate semantic enrichment failure from the committed attachment."""
+    try:
+        await index_authorized_resource(resource, supabase_admin())
+    except Rag2IndexingError as error:
+        print(
+            "[RAG2-AUTO] indexing did not complete "
+            f"resource_id={resource.id} status={error.status_code}"
+        )
+    except Exception as error:
+        print(
+            "[RAG2-AUTO] indexing did not complete "
+            f"resource_id={resource.id} error={type(error).__name__}"
+        )
+
+
+@app.post(
+    "/api/rag2/attachments/{attachment_id}/ingest",
+    response_model=Rag2AutomaticIngestionResponse,
+    status_code=202,
+)
+async def rag2_automatically_ingest_attachment(
+    attachment_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    try:
+        resource_id = await register_attachment_for_rag2(
+            caller_client,
+            str(attachment_id),
+        )
+        resource = await resolve_authorized_resource(
+            caller_client,
+            resource_id,
+        )
+    except Rag2AutomaticIngestionError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    except Rag2IndexingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+    should_schedule = await _prepare_rag2_indexing(
+        caller_client,
+        resource,
+        user["id"],
+        accept_existing=True,
+    )
+    if should_schedule:
+        background_tasks.add_task(
+            _run_automatic_rag2_indexing,
+            resource,
+        )
+    return Rag2AutomaticIngestionResponse(
+        resource_id=resource_id,
+        indexing_scheduled=should_schedule,
+    )
+
+
+@app.get("/api/rag2/resources/{resource_id}/access")
+async def rag2_access_resource(
+    resource_id: uuid.UUID,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    try:
+        resource = await resolve_resource_for_access(
+            caller_client,
+            str(resource_id),
+        )
+    except Rag2ResourceAccessError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+    # Current membership is checked for every access, even when the caller
+    # previously received this resource in a search response.
+    await require_server_permission(
+        caller_client,
+        resource.server_id,
+        user["id"],
+        "view_server",
+    )
+    try:
+        validate_resource_for_access(resource)
+    except Rag2ResourceAccessError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+    # Privileged Storage access is constructed only after caller-scoped
+    # resolution, current membership, scope, and canonical path validation.
+    try:
+        trusted_client = supabase_admin()
+        payload = await download_resource_for_access(
+            resource,
+            trusted_client,
+        )
+    except Rag2ResourceAccessError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to open this resource.",
+        ) from error
+    disposition = "inline" if payload.inline else "attachment"
+    return Response(
+        content=payload.content,
+        media_type=payload.media_type,
+        headers={
+            "Content-Disposition": (
+                f'{disposition}; filename="{payload.filename}"'
+            ),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.post(
+    "/api/rag2/resources/{resource_id}/index",
+    response_model=Rag2IndexingResponse,
+)
+async def rag2_index_resource(
+    resource_id: uuid.UUID,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    try:
+        resource = await resolve_authorized_resource(
+            caller_client,
+            str(resource_id),
+        )
+    except Rag2IndexingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+    await _prepare_rag2_indexing(
+        caller_client,
+        resource,
+        user["id"],
+        accept_existing=False,
+    )
+
+    # Trusted access is deliberately constructed only after caller-scoped
+    # resolution, current membership, authority, scope, and state checks.
+    trusted_client = supabase_admin()
+    try:
+        result = await index_authorized_resource(resource, trusted_client)
+    except Rag2IndexingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    return Rag2IndexingResponse(
+        resource_id=result.resource_id,
+        server_id=result.server_id,
+        detected_type=result.detected_type,
+        chunk_count=result.chunk_count,
+        embedding_model=EMBEDDING_MODEL,
+        embedding_dimensions=EMBEDDING_DIMENSIONS,
+        indexed_at=result.indexed_at,
+    )
+
+
+@app.post(
+    "/api/rag2/servers/{server_id}/search",
+    response_model=Rag2SearchResponse,
+)
+async def rag2_search_server(
+    server_id: uuid.UUID,
+    request: Rag2SearchRequest,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    canonical_server_id = str(server_id)
+
+    # Membership authorization deliberately precedes provider usage.
+    await require_server_permission(
+        caller_client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    try:
+        results = await search_server_chunks(
+            caller_client,
+            canonical_server_id,
+            request.query,
+            limit=request.limit,
+        )
+    except Rag2SearchError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    return Rag2SearchResponse(
+        server_id=server_id,
+        query=request.query,
+        results=results,
+    )
+
+
+@app.post(
+    "/api/rag2/servers/{server_id}/resources/search",
+    response_model=Rag2ResourceSearchResponse,
+)
+async def rag2_search_server_resources(
+    server_id: uuid.UUID,
+    request: Rag2ResourceSearchRequest,
+    user=Depends(get_current_user),
+):
+    caller_client = user["supabase_user"]
+    canonical_server_id = str(server_id)
+
+    # Membership authorization deliberately precedes provider usage.
+    await require_server_permission(
+        caller_client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    try:
+        results = await search_server_resources(
+            caller_client,
+            canonical_server_id,
+            request.query,
+            limit=request.limit,
+        )
+    except Rag2ResourceSearchError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+    return Rag2ResourceSearchResponse(
+        server_id=server_id,
+        query=request.query,
+        results=results,
+    )
+
+
+@app.put(
+    "/api/rag2/resources/{resource_id}/rating",
+    response_model=Rag2RatingSummary,
+)
+async def rag2_set_resource_rating(
+    resource_id: uuid.UUID,
+    request: Rag2RatingRequest,
+    user=Depends(get_current_user),
+):
+    try:
+        return await set_resource_rating(
+            user["supabase_user"],
+            str(resource_id),
+            request.rating,
+        )
+    except Rag2RatingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+
+@app.delete(
+    "/api/rag2/resources/{resource_id}/rating",
+    response_model=Rag2RatingSummary,
+)
+async def rag2_delete_resource_rating(
+    resource_id: uuid.UUID,
+    user=Depends(get_current_user),
+):
+    try:
+        return await delete_resource_rating(
+            user["supabase_user"],
+            str(resource_id),
+        )
+    except Rag2RatingError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+
+# =====================================================================
 # CACHING
 # =====================================================================
 
@@ -1259,7 +1725,7 @@ async def rag_chat(
         )
 
         db = doc_data.vector_store
-        docs = db.similarity_search(retrieval_query, k=4)
+        docs = db.similarity_search(retrieval_query, k=RAG_RETRIEVAL_K)
         context = "\n\n".join([doc.page_content for doc in docs])
         
         chat = get_rag_chat_model(temperature=0.3)
