@@ -695,6 +695,7 @@ export default function DashboardPage() {
               channelsCount={channels.length}
               activeServerId={activeServerId}
               userId={user?.id}
+              currentRole={currentRole}
               onOpenResource={handleOpenChannelResource}
               resourceRatingOverrides={channelRatingOverrides}
             />
