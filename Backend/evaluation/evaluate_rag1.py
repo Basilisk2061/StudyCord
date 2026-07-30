@@ -23,6 +23,7 @@ from rag1.conversation import (
     RAG_RETRIEVAL_K,
     build_contextualization_messages,
     build_grounded_answer_messages,
+    generate_grounded_answer,
     usable_retrieval_query,
 )
 from rag1.ingestion import (
@@ -362,19 +363,18 @@ async def run_rag1_query(
 
     generation_started = clock()
     answer_model = model_factory(0.3)
-    response = await answer_model.ainvoke(
+    generated_answer = await generate_grounded_answer(
+        answer_model,
         build_grounded_answer_messages(
             "\n\n".join(contexts),
             case.history,
             case.question,
-        )
+        ),
     )
     generation_ms = (clock() - generation_started) * 1_000
-    if not isinstance(response.content, str) or not response.content.strip():
-        raise RuntimeError("RAG answer generation returned no usable text.")
 
     return QueryTrace(
-        generated_answer=response.content.strip(),
+        generated_answer=generated_answer,
         retrieved_contexts=contexts,
         retrieval_query=retrieval_query,
         contextualization_ms=contextualization_ms,

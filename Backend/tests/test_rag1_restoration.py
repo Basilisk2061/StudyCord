@@ -63,7 +63,9 @@ class FakeChatModel:
                 '{"executive_summary":"Persistent document summary.",'
                 '"key_concepts":[],"key_points":[]}'
             )
-        return FakeChatResponse("The persisted FAISS context was restored.")
+        return FakeChatResponse(
+            '{"answer":"The persisted FAISS context was restored."}'
+        )
 
 
 class Rag1RestorationTests(unittest.TestCase):

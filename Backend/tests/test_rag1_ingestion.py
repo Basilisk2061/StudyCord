@@ -79,7 +79,9 @@ class FakeChatModel:
                 '{"executive_summary":"A short summary.",'
                 '"key_concepts":[],"key_points":[]}'
             )
-        return FakeChatResponse("The document discusses supervised learning.")
+        return FakeChatResponse(
+            '{"answer":"The document discusses supervised learning."}'
+        )
 
 
 def make_upload(filename: str, content: bytes, content_type: str) -> UploadFile:

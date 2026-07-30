@@ -177,7 +177,7 @@ class Rag1EvaluationTests(unittest.TestCase):
 
     def test_query_timing_uses_existing_retrieval_and_generation_components(self):
         vector_store = FakeVectorStore()
-        answer_model = FakeModel("Grounded answer.")
+        answer_model = FakeModel('{"answer":"Grounded answer."}')
         clocks = iter([0.0, 0.01, 0.02, 0.03, 0.05, 0.08])
 
         trace = asyncio.run(
@@ -194,6 +194,7 @@ class Rag1EvaluationTests(unittest.TestCase):
 
         self.assertEqual(vector_store.calls, [("What is RAG?", 4)])
         self.assertEqual(trace.retrieved_contexts[0], "First retrieved passage.")
+        self.assertEqual(trace.generated_answer, "Grounded answer.")
         self.assertAlmostEqual(trace.retrieval_ms, 10.0)
         self.assertAlmostEqual(trace.generation_ms, 20.0)
         self.assertAlmostEqual(trace.total_ms, 80.0)
@@ -201,7 +202,7 @@ class Rag1EvaluationTests(unittest.TestCase):
     def test_contextualization_is_timed_and_changes_only_retrieval_query(self):
         vector_store = FakeVectorStore()
         rewrite_model = FakeModel("Why is HNSW fast?")
-        answer_model = FakeModel("Grounded HNSW answer.")
+        answer_model = FakeModel('{"answer":"Grounded HNSW answer."}')
         models = iter([rewrite_model, answer_model])
         clocks = iter(
             [0.0, 0.01, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1]

@@ -46,9 +46,11 @@ from rag1.conversation import (
     RAG_CHAT_MESSAGE_MAX_CHARS,
     RAG_CHAT_QUESTION_MAX_CHARS,
     RAG_RETRIEVAL_K,
+    RagChatProviderResponseError,
     build_contextualization_messages,
     build_grounded_answer_messages,
     conversation_cache_extra,
+    generate_grounded_answer,
     usable_retrieval_query,
 )
 from rag1.sessions import (
@@ -1797,8 +1799,25 @@ async def rag_chat(
             request.question,
         )
         
-        response = await chat.ainvoke(prompt)
-        result = {"answer": response.content}
+        try:
+            answer = await generate_grounded_answer(chat, prompt)
+        except RagChatProviderResponseError as provider_response_error:
+            response_kind = (
+                "blocked"
+                if provider_response_error.blocked
+                else "malformed"
+            )
+            print(
+                f"[{endpoint}] Provider response rejected - "
+                f"kind={response_kind}"
+            )
+            raise HTTPException(
+                status_code=(
+                    422 if provider_response_error.blocked else 502
+                ),
+                detail="Unable to generate an answer for this request.",
+            ) from provider_response_error
+        result = {"answer": answer}
 
         # Cache the result
         _set_cached(

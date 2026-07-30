@@ -50,7 +50,7 @@ class FakeChatModel:
                 '{"executive_summary":"Session summary.",'
                 '"key_concepts":[],"key_points":[]}'
             )
-        return FakeChatResponse("Session answer.")
+        return FakeChatResponse('{"answer":"Session answer."}')
 
 
 class Rag1SessionTests(unittest.TestCase):
