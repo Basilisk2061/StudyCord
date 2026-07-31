@@ -112,7 +112,7 @@ export default function DashboardPage() {
 
       // No profile yet — create one
       if (fetchErr && fetchErr.code === 'PGRST116') {
-        const username = user.email.split('@')[0];
+        const username = user.email?.split('@')[0] || `user-${user.id.slice(0, 8)}`;
         const { data: created, error: createErr } = await supabase
           .from('profiles')
           .insert({ id: user.id, email: user.email, username })

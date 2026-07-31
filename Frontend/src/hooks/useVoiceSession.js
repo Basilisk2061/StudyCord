@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
+import { apiRequest } from '../lib/api';
 
 const AUTOPLAY_WARNING = 'Your browser blocked automatic media playback. Click the page, then try again.';
 const PLAYBACK_RETRY_EVENTS = ['pointerdown', 'click', 'keydown'];
@@ -1321,12 +1322,8 @@ export function useVoiceSession(userId) {
       // Fetch TURN credentials from FastAPI backend
       try {
         console.log('[WebRTC] Fetching TURN credentials from backend...');
-        const response = await fetch('http://127.0.0.1:8000/api/turn-credentials');
-        if (!response.ok) {
-          throw new Error(`Failed to fetch TURN credentials: ${response.status} ${response.statusText}`);
-        }
-        const data = await response.json();
-        console.log('[WebRTC] TURN credentials fetched successfully:', data);
+        const data = await apiRequest('/api/turn-credentials');
+        console.log('[WebRTC] TURN credentials fetched successfully.');
         iceServersRef.current = data;
         setTurnWarning('');
       } catch (err) {

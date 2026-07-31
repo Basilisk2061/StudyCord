@@ -190,6 +190,33 @@ body {
 .auth-footer { margin-top: 24px; text-align: center; font-size: 12px; color: var(--text-muted); }
 .auth-link { color: #FFFFFF; text-decoration: underline; font-weight: 500; transition: opacity var(--transition); }
 .auth-link:hover { opacity: 0.8; }
+.form-label-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+}
+.form-label-row .form-label { margin-bottom: 6px; }
+.auth-forgot-link {
+  color: var(--text-secondary); font-size: 12px; text-decoration: none;
+}
+.auth-forgot-link:hover { color: var(--text-primary); text-decoration: underline; }
+.auth-separator {
+  display: flex; align-items: center; gap: 12px; margin: 20px 0;
+  color: var(--text-muted); font-size: 11px; text-transform: uppercase;
+}
+.auth-separator::before, .auth-separator::after {
+  content: ''; height: 1px; flex: 1; background-color: var(--border);
+}
+.auth-google-button {
+  gap: 10px; background-color: transparent; border-color: var(--border);
+  color: var(--text-primary);
+}
+.auth-google-button:hover:not(:disabled) { background-color: var(--bg-hover); }
+.auth-google-button:disabled { cursor: not-allowed; opacity: 0.5; }
+.auth-google-mark { flex: 0 0 auto; }
+.auth-recovery-layout {
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+  box-sizing: border-box;
+}
+.auth-recovery-logo { font-size: 18px; margin-bottom: 28px; }
 .error-message {
   background-color: rgba(239, 68, 68, 0.06); color: var(--error-color);
   padding: 10px 12px; border-radius: var(--radius-sm); font-size: 12px;

@@ -160,7 +160,18 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        "https://localhost:5173",
+        "https://127.0.0.1:5173",
+        "https://localhost:5174",
+        "https://127.0.0.1:5174",
     ],
+    allow_origin_regex=(
+        r"^https://(?:"
+        r"10(?:\.\d{1,3}){3}|"
+        r"192\.168(?:\.\d{1,3}){2}|"
+        r"172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}"
+        r"):(?:5173|5174)$"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1725,11 +1736,13 @@ def _set_cached(
 
 
 # =====================================================================
-# TURN CREDENTIALS (unchanged)
+# TURN CREDENTIALS
 # =====================================================================
 
 @app.get("/api/turn-credentials")
-async def get_turn_credentials():
+async def get_turn_credentials(
+    _current_user: dict = Depends(get_current_user),
+):
     if not METERED_SECRET_KEY:
         print("[TURN-API] METERED_SECRET_KEY environment variable is not set.")
         raise HTTPException(
