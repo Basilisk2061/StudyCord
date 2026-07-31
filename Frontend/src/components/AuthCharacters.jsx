@@ -1,6 +1,6 @@
 /* eslint-disable no-unused-vars */
 import { useEffect, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 
 /**
  * AuthCharacters — Animated study owl mascot for StudyCord auth pages.
@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 export default function AuthCharacters({ charState = 'idle' }) {
   const containerRef = useRef(null);
   const [pupilOffset, setPupilOffset] = useState({ x: 0, y: 0 });
+  const shouldReduceMotion = useReducedMotion();
 
   // Track mouse position for eye movement
   useEffect(() => {
@@ -75,8 +76,10 @@ export default function AuthCharacters({ charState = 'idle' }) {
       <motion.svg
         viewBox="0 0 200 260"
         className="auth-owl-svg"
-        animate={{ y: [0, -4, 0] }}
-        transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+        animate={shouldReduceMotion ? { y: 0 } : { y: [0, -3, 0] }}
+        transition={shouldReduceMotion
+          ? { duration: 0 }
+          : { duration: 5.5, repeat: Infinity, ease: 'easeInOut' }}
       >
         {/* ── Books (bottom layer) ── */}
         <rect x="50" y="225" width="100" height="11" rx="3" fill="#4B5563" />
