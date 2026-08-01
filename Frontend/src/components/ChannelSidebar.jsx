@@ -18,6 +18,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { supabase } from '../lib/supabase';
 import VoiceSessionBar from './VoiceSessionBar';
 import { hasServerPermission } from '../lib/permissions';
+import DismissableMenu from './DismissableMenu';
 
 function HashIcon() {
   return <span className="channel-item__hash">#</span>;
@@ -334,7 +335,11 @@ export default function ChannelSidebar({
             </svg>
           </button>
         )}
-        <div className="server-header-menu">
+        <DismissableMenu
+          className="server-header-menu"
+          open={serverMenuOpen}
+          onDismiss={() => setServerMenuOpen(false)}
+        >
           <button
             type="button"
             className="channel-settings-btn"
@@ -367,7 +372,7 @@ export default function ChannelSidebar({
               )}
             </div>
           )}
-        </div>
+        </DismissableMenu>
       </div>
       <nav className="channel-sidebar__list">
         <button

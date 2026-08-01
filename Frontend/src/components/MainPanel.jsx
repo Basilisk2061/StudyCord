@@ -25,6 +25,7 @@ import MessageAttachment from './MessageAttachment';
 import PinnedMessagesPanel, { PinIcon } from './PinnedMessagesPanel';
 import NeutralHomeState from './NeutralHomeState';
 import SelectedServerHomeState from './SelectedServerHomeState';
+import DismissableMenu from './DismissableMenu';
 
 // ---------- constants ----------
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -731,7 +732,11 @@ export default function MainPanel({
               <span className="message-author">{username}</span>
               <span className="message-time">{formatTime(msg.created_at)}</span>
               {hasMessageActions && (
-                <div className="message-actions">
+                <DismissableMenu
+                  className="message-actions"
+                  open={openMessageMenuId === msg.id}
+                  onDismiss={() => setOpenMessageMenuId(null)}
+                >
                   <button
                     type="button"
                     className="message-actions__trigger"
@@ -775,7 +780,7 @@ export default function MainPanel({
                       )}
                     </div>
                   )}
-                </div>
+                </DismissableMenu>
               )}
             </div>
             {isPinned && (

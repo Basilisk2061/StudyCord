@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import ServerSidebar from '../components/ServerSidebar';
@@ -13,6 +14,7 @@ import ServerSettingsModal from '../components/ServerSettingsModal';
 import { apiRequest } from '../lib/api';
 import { getCurrentMemberRole } from '../lib/permissions';
 import { leaveServer } from '../lib/lifecycleApi';
+import { dismissAllMenus } from '../hooks/useDismissableMenu';
 
 function moveChannelLocally(channels, channelId, beforeChannelId, afterChannelId) {
   const movedChannel = channels.find((channel) => channel.id === channelId);
@@ -49,6 +51,7 @@ function moveChannelLocally(channels, channelId, beforeChannelId, afterChannelId
 }
 
 export default function DashboardPage() {
+  const location = useLocation();
   const { session } = useAuth();
   const user = session?.user;
 
@@ -93,6 +96,10 @@ export default function DashboardPage() {
   const [serverActionModal, setServerActionModal] = useState(null);
   const [channelCreateFormOpen, setChannelCreateFormOpen] = useState(false);
   const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    dismissAllMenus();
+  }, [activeServerId, activeChannelId, workspace, settingsOpen, location.pathname]);
 
   // ──────────────────────────────────────────────
   // 1. Ensure profile exists
