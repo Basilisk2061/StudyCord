@@ -367,15 +367,20 @@ export default function ServerSettingsModal({
             isOwner ? (
               <div className="settings-stack">
                 {bansLoading && <p className="settings-muted">Loading bans...</p>}
-                {!bansLoading && bans.length === 0 && <p className="settings-muted">No banned users.</p>}
+                {!bansLoading && bans.length === 0 && (
+                  <div className="settings-bans-empty">
+                    <h4>No banned members</h4>
+                    <p>Everyone currently has access to this server.</p>
+                  </div>
+                )}
                 {bans.map((ban) => (
                   <div className="settings-ban" key={ban.id}>
                     <MemberAvatar profile={ban.profile} />
                     <div className="settings-member__body">
                       <span className="settings-member__name">{displayProfile(ban.profile)}</span>
-                      <span className="settings-muted">{ban.reason || 'No reason provided'}</span>
+                      <span className="settings-ban__reason">{ban.reason || 'No reason provided'}</span>
                     </div>
-                    <button className="settings-link-btn" disabled={busyKey === `unban:${ban.user_id}`} onClick={() => unban(ban)}>Unban</button>
+                    <button className="settings-link-btn settings-ban__action" disabled={busyKey === `unban:${ban.user_id}`} onClick={() => unban(ban)}>Unban</button>
                   </div>
                 ))}
               </div>

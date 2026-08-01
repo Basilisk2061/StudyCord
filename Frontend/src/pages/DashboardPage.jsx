@@ -90,6 +90,8 @@ export default function DashboardPage() {
   const [channelSidebarOpen, setChannelSidebarOpen] = useState(true);
   const [mobilePanelView, setMobilePanelView] = useState('sidebar');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [serverActionModal, setServerActionModal] = useState(null);
+  const [channelCreateFormOpen, setChannelCreateFormOpen] = useState(false);
   const [toast, setToast] = useState('');
 
   // ──────────────────────────────────────────────
@@ -423,10 +425,12 @@ export default function DashboardPage() {
     setResourceOrigin(null);
     setChannelResource(null);
     setChannelRatingOverrides({});
+    setChannelCreateFormOpen(false);
     setMobilePanelView('sidebar');
   };
 
   const handleSelectChannel = (channelId, channelName, channelType) => {
+    setChannelCreateFormOpen(false);
     setActiveChannelId(channelId);
     setActiveChannelName(channelName);
     setActiveChannelType(channelType);
@@ -583,6 +587,7 @@ export default function DashboardPage() {
   // ──────────────────────────────────────────────
   const activeServer = servers.find((s) => s.id === activeServerId);
   const activeServerName = activeServer?.name || null;
+  const activeServerDescription = activeServer?.description || null;
   const activeServerInviteCode = activeServer?.invite_code || null;
   const currentRole = getCurrentMemberRole(members, user?.id);
   const advancedSearchVisible = workspace === 'advanced-search'
@@ -608,10 +613,15 @@ export default function DashboardPage() {
         onSelectServer={handleSelectServer}
         onCreateServer={handleCreateServer}
         onJoinServer={handleJoinServer}
+        createModalOpen={serverActionModal === 'create'}
+        onCreateModalOpenChange={(open) => setServerActionModal(open ? 'create' : null)}
+        joinModalOpen={serverActionModal === 'join'}
+        onJoinModalOpenChange={(open) => setServerActionModal(open ? 'join' : null)}
       />
       <ChannelSidebar
         serverId={activeServerId}
         serverName={activeServerName}
+        serverDescription={activeServerDescription}
         channels={channels}
         channelsLoading={channelsLoading}
         channelsError={channelsError}
@@ -625,6 +635,8 @@ export default function DashboardPage() {
         onLeaveServer={handleLeaveServer}
         workspace={workspace}
         onOpenAdvancedSearch={handleOpenAdvancedSearch}
+        createFormOpen={channelCreateFormOpen}
+        onCreateFormOpenChange={setChannelCreateFormOpen}
       />
       {advancedSearchVisible ? (
         <AdvancedSearchPanel
@@ -682,6 +694,7 @@ export default function DashboardPage() {
           >
             <MainPanel
               serverName={activeServerName}
+              server={activeServer}
               channelName={activeChannelName}
               channelType={activeChannelType}
               channelId={activeChannelId}
@@ -691,13 +704,14 @@ export default function DashboardPage() {
               channelSidebarOpen={channelSidebarOpen}
               onToggleChannelSidebar={() => setChannelSidebarOpen((p) => !p)}
               onMobileBack={() => setMobilePanelView('sidebar')}
-              serversCount={servers.length}
-              channelsCount={channels.length}
               activeServerId={activeServerId}
               userId={user?.id}
               currentRole={currentRole}
               onOpenResource={handleOpenChannelResource}
               resourceRatingOverrides={channelRatingOverrides}
+              onCreateServerRequest={() => setServerActionModal('create')}
+              onJoinServerRequest={() => setServerActionModal('join')}
+              onCreateChannelRequest={() => setChannelCreateFormOpen(true)}
             />
           </div>
         </>

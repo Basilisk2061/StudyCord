@@ -23,6 +23,8 @@ import {
 import { hasServerPermission } from '../lib/permissions';
 import MessageAttachment from './MessageAttachment';
 import PinnedMessagesPanel, { PinIcon } from './PinnedMessagesPanel';
+import NeutralHomeState from './NeutralHomeState';
+import SelectedServerHomeState from './SelectedServerHomeState';
 
 // ---------- constants ----------
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -38,9 +40,12 @@ const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.
 export default function MainPanel({
   serverName, channelName, channelType, channelId, userEmail, profile,
   onLogout, channelSidebarOpen, onToggleChannelSidebar, onMobileBack,
-  serversCount, channelsCount, activeServerId, userId, onOpenResource,
+  server, activeServerId, userId, onOpenResource,
   currentRole,
   resourceRatingOverrides = {},
+  onCreateServerRequest,
+  onJoinServerRequest,
+  onCreateChannelRequest,
 }) {
   const navigate = useNavigate();
   const hasChannel = channelName && serverName;
@@ -1027,33 +1032,19 @@ export default function MainPanel({
               </form>
             </div>
           </>
+        ) : activeServerId ? (
+          <SelectedServerHomeState
+            server={server}
+            currentRole={currentRole}
+            onCreateChannel={onCreateChannelRequest}
+          />
         ) : (
-          <div className="main-panel__welcome" style={{ overflow: 'auto', flex: 1 }}>
-            <div className="main-panel__welcome-card">
-              <h2 className="main-panel__welcome-title">Welcome back!</h2>
-              <p className="main-panel__welcome-subtitle">
-                Select a server from the sidebar, then pick a channel to get started.
-              </p>
-              <div className="main-panel__quick-stats">
-                <div className="main-panel__stat">
-                  <span className="main-panel__stat-value">{serversCount ?? 0}</span>
-                  <span className="main-panel__stat-label">Servers</span>
-                </div>
-                <div className="main-panel__stat">
-                  <span className="main-panel__stat-value">{channelsCount ?? 0}</span>
-                  <span className="main-panel__stat-label">Channels</span>
-                </div>
-              </div>
-            </div>
-            <div className="main-panel__tips">
-              <h3 className="main-panel__tips-title">Quick Tips</h3>
-              <ul className="main-panel__tips-list">
-                <li>Click a server icon on the left to switch servers</li>
-                <li>Browse channels in the sidebar to jump into a conversation</li>
-                <li>Use the + button to create a new server or channel</li>
-              </ul>
-            </div>
-          </div>
+          <NeutralHomeState
+            profile={profile}
+            userEmail={userEmail}
+            onCreateServer={onCreateServerRequest}
+            onJoinServer={onJoinServerRequest}
+          />
         )}
       </div>
       {pinnedPanelOpen && (
