@@ -428,11 +428,12 @@ class SupabaseRestClient:
                 )
             if (
                 "only the message author may delete this message" in response.text
+                or "message deletion requires author or server manager" in response.text
                 or "server owner must transfer ownership or delete the server before leaving" in response.text
             ):
                 raise HTTPException(status_code=403, detail=(
-                    "Only the message author may delete this message."
-                    if "message author" in response.text
+                    "Only the message author or a server manager may delete this message."
+                    if "message" in response.text
                     else "Transfer ownership or delete the server before leaving."
                 ))
             if (
@@ -1014,7 +1015,7 @@ async def leave_server(server_id: uuid.UUID, user=Depends(get_current_user)):
 
 @app.delete("/api/messages/{message_id}")
 async def delete_own_message(message_id: uuid.UUID, user=Depends(get_current_user)):
-    """Delete an authored message after backend-only attachment cleanup."""
+    """Delete an authorized message after backend-only attachment cleanup."""
     client = user["supabase_user"]
     canonical_message_id = str(message_id)
 
@@ -1025,7 +1026,6 @@ async def delete_own_message(message_id: uuid.UUID, user=Depends(get_current_use
     try:
         targets = parse_message_deletion_targets(
             target_rows,
-            expected_user_id=user["id"],
         )
     except LifecycleTargetError as target_error:
         print(

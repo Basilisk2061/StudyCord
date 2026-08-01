@@ -7,6 +7,7 @@ import {
   leaveServer,
   removeDeletedMessage,
 } from '../src/lib/lifecycleApi.js';
+import { hasServerPermission } from '../src/lib/permissions.js';
 
 
 test('lifecycle API uses authenticated backend endpoints only', async () => {
@@ -34,13 +35,17 @@ test('message removal preserves backend-provided order', () => {
   assert.deepEqual(messages, [{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
 });
 
-test('message UI exposes delete only for the current author and confirms impact', async () => {
+test('message UI exposes deletion to authors and server managers only', async () => {
   const source = await readFile(
     new URL('../src/components/MainPanel.jsx', import.meta.url),
     'utf8',
   );
   assert.match(source, /const isOwnMessage = msg\.user_id === userId/);
-  assert.match(source, /\{isOwnMessage && \(/);
+  assert.match(source, /const canManagePins = hasServerPermission\(currentRole, 'manage_server'\)/);
+  assert.match(source, /const canModerateMessages = canManagePins/);
+  assert.match(source, /const canDeleteMessage = isOwnMessage \|\| canModerateMessages/);
+  assert.match(source, /\{canDeleteMessage && \(/);
+  assert.match(source, /\{isOwnMessage \? 'Delete' : 'Delete Message'\}/);
   assert.match(source, /Delete message\?/);
   assert.match(source, /linked server resource, chunks, and ratings/);
   assert.match(source, /Existing private RAG 1 imports remain/);
@@ -48,6 +53,19 @@ test('message UI exposes delete only for the current author and confirms impact'
   assert.match(source, /removeDeletedMessage\(current, deletedMessageId\)/);
   assert.doesNotMatch(source, /\.from\('messages'\)\s*\.delete/);
   assert.doesNotMatch(source, /\.from\('message_attachments'\)\s*\.delete/);
+});
+
+test('member, admin, and owner deletion visibility follows existing permissions', () => {
+  const canDelete = (role, isOwnMessage) => (
+    isOwnMessage || hasServerPermission(role, 'manage_server')
+  );
+
+  assert.equal(canDelete('member', true), true);
+  assert.equal(canDelete('member', false), false);
+  assert.equal(canDelete('admin', true), true);
+  assert.equal(canDelete('admin', false), true);
+  assert.equal(canDelete('owner', true), true);
+  assert.equal(canDelete('owner', false), true);
 });
 
 test('failed message deletion keeps the message visible', async () => {

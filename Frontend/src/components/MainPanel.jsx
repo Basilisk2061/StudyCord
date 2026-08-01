@@ -86,6 +86,7 @@ export default function MainPanel({
   const resourceIdsKey = resourceIds.slice().sort().join(',');
   const pinsByMessageId = indexPinsByMessage(pinnedMessages);
   const canManagePins = hasServerPermission(currentRole, 'manage_server');
+  const canModerateMessages = canManagePins;
 
   useEffect(() => {
     resourceRefreshTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -705,7 +706,8 @@ export default function MainPanel({
       const initial = username[0]?.toUpperCase() || '?';
       const isOwnMessage = msg.user_id === userId;
       const isPinned = Boolean(pinsByMessageId[msg.id]);
-      const hasMessageActions = isOwnMessage || canManagePins;
+      const canDeleteMessage = isOwnMessage || canModerateMessages;
+      const hasMessageActions = canDeleteMessage || canManagePins;
 
       items.push(
         <div className="message-row" key={msg.id} id={`message-${msg.id}`}>
@@ -757,7 +759,7 @@ export default function MainPanel({
                             : (isPinned ? 'Unpin message' : 'Pin message')}
                         </button>
                       )}
-                      {isOwnMessage && (
+                      {canDeleteMessage && (
                         <button
                           type="button"
                           className="message-actions__item message-actions__delete"
@@ -768,7 +770,7 @@ export default function MainPanel({
                             setOpenMessageMenuId(null);
                           }}
                         >
-                          Delete message
+                          {isOwnMessage ? 'Delete' : 'Delete Message'}
                         </button>
                       )}
                     </div>
@@ -1110,7 +1112,11 @@ export default function MainPanel({
                 disabled={Boolean(deletingMessageId)}
                 onClick={handleDeleteMessage}
               >
-                {deletingMessageId ? 'Deleting…' : 'Delete message'}
+                {deletingMessageId
+                  ? 'Deleting…'
+                  : deleteCandidate.user_id === userId
+                    ? 'Delete'
+                    : 'Delete Message'}
               </button>
             </div>
           </div>

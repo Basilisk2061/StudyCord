@@ -40,10 +40,10 @@ test('message menu, indicators, and realtime follow role and channel scope', asy
     'utf8',
   );
   assert.match(source, /hasServerPermission\(currentRole, 'manage_server'\)/);
-  assert.match(source, /const hasMessageActions = isOwnMessage \|\| canManagePins/);
+  assert.match(source, /const hasMessageActions = canDeleteMessage \|\| canManagePins/);
   assert.match(source, /\{hasMessageActions && \(/);
   assert.match(source, /\{canManagePins && \(/);
-  assert.match(source, /\{isOwnMessage && \(/);
+  assert.match(source, /\{canDeleteMessage && \(/);
   assert.match(source, /isPinned \? 'Unpin message' : 'Pin message'/);
   assert.match(source, />\s*Pinned\s*</);
   assert.match(source, /table: 'pinned_messages'/);
