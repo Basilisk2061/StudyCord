@@ -1,32 +1,5 @@
 import { useState } from 'react';
-import { getServerIconPublicUrl } from '../lib/serverIcons';
-
-function getInitials(name) {
-  return name
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
-}
-
-function ServerIconContents({ server }) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const iconUrl = getServerIconPublicUrl(server.icon_path);
-
-  if (iconUrl && !imageFailed) {
-    return (
-      <img
-        className="server-icon__image"
-        src={iconUrl}
-        alt={`${server.name} icon`}
-        onError={() => setImageFailed(true)}
-      />
-    );
-  }
-
-  return <span className="server-icon__label">{getInitials(server.name)}</span>;
-}
+import ServerIconContents from './ServerIconContents';
 
 export default function ServerSidebar({
   servers,
@@ -35,16 +8,25 @@ export default function ServerSidebar({
   onSelectServer,
   onCreateServer,
   onJoinServer,
+  createModalOpen,
+  onCreateModalOpenChange,
+  joinModalOpen,
+  onJoinModalOpenChange,
 }) {
-  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [localCreateModalOpen, setLocalCreateModalOpen] = useState(false);
   const [newServerName, setNewServerName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(null);
 
-  const [showJoinModal, setShowJoinModal] = useState(false);
+  const [localJoinModalOpen, setLocalJoinModalOpen] = useState(false);
   const [inviteCode, setInviteCode] = useState('');
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState(null);
+
+  const showCreateModal = createModalOpen ?? localCreateModalOpen;
+  const showJoinModal = joinModalOpen ?? localJoinModalOpen;
+  const setShowCreateModal = onCreateModalOpenChange ?? setLocalCreateModalOpen;
+  const setShowJoinModal = onJoinModalOpenChange ?? setLocalJoinModalOpen;
 
   const handleCreate = async (e) => {
     e.preventDefault();

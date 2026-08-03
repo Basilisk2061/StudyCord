@@ -1,6 +1,12 @@
 /* eslint-disable no-unused-vars */
 import { useEffect } from 'react';
-import { motion, useMotionValue, useMotionTemplate, animate } from 'framer-motion';
+import {
+  motion,
+  useMotionValue,
+  useMotionTemplate,
+  animate,
+  useReducedMotion,
+} from 'framer-motion';
 
 const COLORS = [
   '#000000',
@@ -12,8 +18,13 @@ const COLORS = [
 export default function EtherealBackground({ children }) {
   const color = useMotionValue(COLORS[0]);
   const bgGradient = useMotionTemplate`radial-gradient(ellipse 100% 80% at 30% 20%, ${color}, transparent)`;
+  const shouldReduceMotion = useReducedMotion();
 
   useEffect(() => {
+    if (shouldReduceMotion) {
+      color.set(COLORS[0]);
+      return undefined;
+    }
     const controls = animate(color, COLORS, {
       duration: 12,
       repeat: Infinity,
@@ -21,7 +32,7 @@ export default function EtherealBackground({ children }) {
       ease: 'easeInOut',
     });
     return () => controls.stop();
-  }, [color]);
+  }, [color, shouldReduceMotion]);
 
   return (
     <div className="ethereal-wrapper">

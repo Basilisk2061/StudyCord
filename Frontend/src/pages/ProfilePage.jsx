@@ -51,7 +51,7 @@ export default function ProfilePage() {
           // If profile doesn't exist, use defaults
           setProfile(prev => ({
             ...prev,
-            username: user.email.split('@')[0],
+            username: user.email?.split('@')[0] || `user-${user.id.slice(0, 8)}`,
           }));
         }
       } catch (err) {

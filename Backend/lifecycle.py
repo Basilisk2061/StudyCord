@@ -29,17 +29,16 @@ def _canonical_uuid(value: Any, field: str) -> str:
 
 def parse_message_deletion_targets(
     rows: Any,
-    *,
-    expected_user_id: str,
 ) -> list[MessageDeletionTarget]:
+    """Validate Storage targets returned by the caller-authorized deletion RPC."""
     if rows is None:
         return []
     if not isinstance(rows, list):
         raise LifecycleTargetError("Invalid deletion target response.")
 
-    actor_id = _canonical_uuid(expected_user_id, "user ID")
     targets: list[MessageDeletionTarget] = []
     seen_paths: set[str] = set()
+    expected_scope: tuple[str, str, str] | None = None
 
     for row in rows:
         if not isinstance(row, dict):
@@ -48,10 +47,13 @@ def parse_message_deletion_targets(
         channel_id = _canonical_uuid(row.get("channel_id"), "channel ID")
         user_id = _canonical_uuid(row.get("user_id"), "target user ID")
         path = row.get("storage_path")
-        expected_prefix = f"{server_id}/{channel_id}/{actor_id}/"
+        row_scope = (server_id, channel_id, user_id)
+        if expected_scope is None:
+            expected_scope = row_scope
+        expected_prefix = f"{server_id}/{channel_id}/{user_id}/"
 
         if (
-            user_id != actor_id
+            row_scope != expected_scope
             or not isinstance(path, str)
             or len(path) > 1024
             or not path.startswith(expected_prefix)

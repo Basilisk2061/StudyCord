@@ -99,6 +99,7 @@ from lifecycle import (
     LifecycleTargetError,
     parse_message_deletion_targets,
 )
+from pinning import PinResponse, PinnedMessageSummary, shape_pinned_messages
 
 # OpenRouter LLM import
 from langchain_openai import ChatOpenAI
@@ -159,7 +160,18 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        "https://localhost:5173",
+        "https://127.0.0.1:5173",
+        "https://localhost:5174",
+        "https://127.0.0.1:5174",
     ],
+    allow_origin_regex=(
+        r"^https://(?:"
+        r"10(?:\.\d{1,3}){3}|"
+        r"192\.168(?:\.\d{1,3}){2}|"
+        r"172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}"
+        r"):(?:5173|5174)$"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -399,13 +411,29 @@ class SupabaseRestClient:
                 raise HTTPException(status_code=400, detail="New owner must be a current server member.")
             if "message not found" in response.text:
                 raise HTTPException(status_code=404, detail="Message not found.")
+            if "pin channel not found" in response.text:
+                raise HTTPException(status_code=404, detail="Channel not found.")
+            if (
+                "pinning requires owner or admin" in response.text
+                or "pin viewing requires current server membership" in response.text
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You do not have permission to access channel pins.",
+                )
+            if "pin message and channel scope do not match" in response.text:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The message channel metadata is inconsistent.",
+                )
             if (
                 "only the message author may delete this message" in response.text
+                or "message deletion requires author or server manager" in response.text
                 or "server owner must transfer ownership or delete the server before leaving" in response.text
             ):
                 raise HTTPException(status_code=403, detail=(
-                    "Only the message author may delete this message."
-                    if "message author" in response.text
+                    "Only the message author or a server manager may delete this message."
+                    if "message" in response.text
                     else "Transfer ownership or delete the server before leaving."
                 ))
             if (
@@ -987,7 +1015,7 @@ async def leave_server(server_id: uuid.UUID, user=Depends(get_current_user)):
 
 @app.delete("/api/messages/{message_id}")
 async def delete_own_message(message_id: uuid.UUID, user=Depends(get_current_user)):
-    """Delete an authored message after backend-only attachment cleanup."""
+    """Delete an authorized message after backend-only attachment cleanup."""
     client = user["supabase_user"]
     canonical_message_id = str(message_id)
 
@@ -998,7 +1026,6 @@ async def delete_own_message(message_id: uuid.UUID, user=Depends(get_current_use
     try:
         targets = parse_message_deletion_targets(
             target_rows,
-            expected_user_id=user["id"],
         )
     except LifecycleTargetError as target_error:
         print(
@@ -1038,6 +1065,128 @@ async def delete_own_message(message_id: uuid.UUID, user=Depends(get_current_use
         "message_id": canonical_message_id,
         "deleted": bool(deleted),
     }
+
+
+async def get_message_scope(
+    client: SupabaseRestClient,
+    message_id: str,
+) -> dict:
+    rows = await client.rest(
+        "GET",
+        "messages",
+        params={
+            "id": f"eq.{message_id}",
+            "select": "id,server_id,channel_id",
+            "limit": "1",
+        },
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Message not found.")
+    return rows[0]
+
+
+async def get_channel_scope(
+    client: SupabaseRestClient,
+    channel_id: str,
+) -> dict:
+    rows = await client.rest(
+        "GET",
+        "channels",
+        params={
+            "id": f"eq.{channel_id}",
+            "select": "id,server_id",
+            "limit": "1",
+        },
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Channel not found.")
+    return rows[0]
+
+
+@app.post(
+    "/api/messages/{message_id}/pin",
+    response_model=PinResponse,
+)
+async def pin_message(message_id: uuid.UUID, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    canonical_message_id = str(message_id)
+    message = await get_message_scope(client, canonical_message_id)
+    await require_server_permission(
+        client,
+        str(message["server_id"]),
+        user["id"],
+        "manage_server",
+    )
+    await client.rpc(
+        "pin_channel_message",
+        {"p_message_id": canonical_message_id},
+    )
+    return PinResponse(
+        success=True,
+        message_id=message_id,
+        pinned=True,
+    )
+
+
+@app.delete(
+    "/api/messages/{message_id}/pin",
+    response_model=PinResponse,
+)
+async def unpin_message(message_id: uuid.UUID, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    canonical_message_id = str(message_id)
+    message = await get_message_scope(client, canonical_message_id)
+    await require_server_permission(
+        client,
+        str(message["server_id"]),
+        user["id"],
+        "manage_server",
+    )
+    await client.rpc(
+        "unpin_channel_message",
+        {"p_message_id": canonical_message_id},
+    )
+    return PinResponse(
+        success=True,
+        message_id=message_id,
+        pinned=False,
+    )
+
+
+@app.get(
+    "/api/channels/{channel_id}/pins",
+    response_model=list[PinnedMessageSummary],
+)
+async def channel_pins(channel_id: uuid.UUID, user=Depends(get_current_user)):
+    client = user["supabase_user"]
+    canonical_channel_id = str(channel_id)
+    channel = await get_channel_scope(client, canonical_channel_id)
+    canonical_server_id = str(channel["server_id"])
+    await require_server_permission(
+        client,
+        canonical_server_id,
+        user["id"],
+        "view_server",
+    )
+    rows = await client.rpc(
+        "get_channel_pinned_messages",
+        {"p_channel_id": canonical_channel_id},
+    )
+    try:
+        return shape_pinned_messages(
+            rows,
+            expected_server_id=canonical_server_id,
+            expected_channel_id=canonical_channel_id,
+        )
+    except (TypeError, ValueError) as result_error:
+        print(
+            "[MESSAGE-PINS] Rejected invalid database result "
+            f"channel_id={canonical_channel_id}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Pinned messages could not be loaded.",
+        ) from result_error
 
 
 async def update_server_icon_path(
@@ -1587,11 +1736,13 @@ def _set_cached(
 
 
 # =====================================================================
-# TURN CREDENTIALS (unchanged)
+# TURN CREDENTIALS
 # =====================================================================
 
 @app.get("/api/turn-credentials")
-async def get_turn_credentials():
+async def get_turn_credentials(
+    _current_user: dict = Depends(get_current_user),
+):
     if not METERED_SECRET_KEY:
         print("[TURN-API] METERED_SECRET_KEY environment variable is not set.")
         raise HTTPException(

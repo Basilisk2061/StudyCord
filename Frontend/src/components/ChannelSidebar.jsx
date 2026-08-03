@@ -18,9 +18,10 @@ import { CSS } from '@dnd-kit/utilities';
 import { supabase } from '../lib/supabase';
 import VoiceSessionBar from './VoiceSessionBar';
 import { hasServerPermission } from '../lib/permissions';
+import DismissableMenu from './DismissableMenu';
 
 function HashIcon() {
-  return <span style={{ fontSize: '14px', fontWeight: 700, opacity: 0.45, lineHeight: 1 }}>#</span>;
+  return <span className="channel-item__hash">#</span>;
 }
 
 function VoiceIcon() {
@@ -168,7 +169,7 @@ function SortableChannelList({
 }
 
 export default function ChannelSidebar({
-  serverId, serverName, channels, channelsLoading, channelsError,
+  serverId, serverName, serverDescription, channels, channelsLoading, channelsError,
   activeChannelId, onSelectChannel, onCreateChannel, onReorderChannel,
   voiceSession,
   currentRole,
@@ -176,8 +177,10 @@ export default function ChannelSidebar({
   onLeaveServer,
   workspace,
   onOpenAdvancedSearch,
+  createFormOpen,
+  onCreateFormOpenChange,
 }) {
-  const [showForm, setShowForm] = useState(false);
+  const [localCreateFormOpen, setLocalCreateFormOpen] = useState(false);
   const [name, setName] = useState('');
   const [newChannelType, setNewChannelType] = useState('text');
   const [creating, setCreating] = useState(false);
@@ -188,6 +191,9 @@ export default function ChannelSidebar({
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState('');
+
+  const showForm = createFormOpen ?? localCreateFormOpen;
+  const setShowForm = onCreateFormOpenChange ?? setLocalCreateFormOpen;
 
   // ---------- voice participant counts per channel ----------
   const [voiceCounts, setVoiceCounts] = useState({});
@@ -259,6 +265,13 @@ export default function ChannelSidebar({
     setCreating(false);
   };
 
+  const handleCancelCreate = () => {
+    setShowForm(false);
+    setName('');
+    setErr(null);
+    setNewChannelType('text');
+  };
+
   const handleReorder = async (channelId, beforeChannelId, afterChannelId) => {
     if (!onReorderChannel || reorderBusy) return;
     setReorderBusy(true);
@@ -299,11 +312,21 @@ export default function ChannelSidebar({
   const voiceCh = channels.filter((c) => c.type === 'voice');
   const canManageChannels = hasServerPermission(currentRole, 'manage_channels');
   const canManageServer = hasServerPermission(currentRole, 'manage_server');
+  const visibleServerDescription = typeof serverDescription === 'string'
+    ? serverDescription.trim()
+    : '';
 
   return (
     <aside className="channel-sidebar" id="channel-sidebar">
       <div className="channel-sidebar__header">
-        <span className="channel-sidebar__title">{serverName || 'Server'}</span>
+        <div className="channel-sidebar__identity">
+          <span className="channel-sidebar__title">{serverName || 'Server'}</span>
+          {visibleServerDescription && (
+            <span className="channel-sidebar__description" title={visibleServerDescription}>
+              {visibleServerDescription}
+            </span>
+          )}
+        </div>
         {canManageServer && (
           <button className="channel-settings-btn" onClick={onOpenSettings} title="Server settings" aria-label="Server settings">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -312,7 +335,11 @@ export default function ChannelSidebar({
             </svg>
           </button>
         )}
-        <div className="server-header-menu">
+        <DismissableMenu
+          className="server-header-menu"
+          open={serverMenuOpen}
+          onDismiss={() => setServerMenuOpen(false)}
+        >
           <button
             type="button"
             className="channel-settings-btn"
@@ -345,7 +372,7 @@ export default function ChannelSidebar({
               )}
             </div>
           )}
-        </div>
+        </DismissableMenu>
       </div>
       <nav className="channel-sidebar__list">
         <button
@@ -439,42 +466,82 @@ export default function ChannelSidebar({
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                 </svg>
-                <span>Add Channel</span>
+                <span>Add channel</span>
               </button>
             ) : (
-              <form className="channel-create-form" onSubmit={handleCreate}>
-                <input className="channel-create-form__input" type="text" placeholder="channel-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus disabled={creating} />
+              <form
+                className="channel-create-form"
+                onSubmit={handleCreate}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && !creating) {
+                    event.preventDefault();
+                    handleCancelCreate();
+                  }
+                }}
+              >
+                <h3 className="channel-create-form__title">Create channel</h3>
+                <label className="channel-create-form__label" htmlFor="new-channel-name">
+                  Channel name
+                </label>
+                <input
+                  id="new-channel-name"
+                  className="channel-create-form__input"
+                  type="text"
+                  placeholder="new-channel"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  autoFocus
+                  disabled={creating}
+                />
 
-                {/* Type toggle */}
-                <div className="channel-type-toggle">
-                  <button
-                    type="button"
-                    className={`channel-type-toggle__btn ${newChannelType === 'text' ? 'channel-type-toggle__btn--active' : ''}`}
-                    onClick={() => setNewChannelType('text')}
-                    disabled={creating}
-                  >
-                    <span style={{ fontSize: '11px', fontWeight: 700, opacity: 0.6 }}>#</span>
-                    Text
-                  </button>
-                  <button
-                    type="button"
-                    className={`channel-type-toggle__btn ${newChannelType === 'voice' ? 'channel-type-toggle__btn--active' : ''}`}
-                    onClick={() => setNewChannelType('voice')}
-                    disabled={creating}
-                  >
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                    </svg>
-                    Voice
-                  </button>
-                </div>
+                <fieldset className="channel-create-form__type-fieldset">
+                  <legend className="channel-create-form__label">Channel type</legend>
+                  <div className="channel-type-toggle">
+                    <button
+                      type="button"
+                      className={`channel-type-toggle__btn ${newChannelType === 'text' ? 'channel-type-toggle__btn--active' : ''}`}
+                      onClick={() => setNewChannelType('text')}
+                      disabled={creating}
+                      aria-pressed={newChannelType === 'text'}
+                    >
+                      <span className="channel-type-toggle__hash" aria-hidden="true">#</span>
+                      Text
+                    </button>
+                    <button
+                      type="button"
+                      className={`channel-type-toggle__btn ${newChannelType === 'voice' ? 'channel-type-toggle__btn--active' : ''}`}
+                      onClick={() => setNewChannelType('voice')}
+                      disabled={creating}
+                      aria-pressed={newChannelType === 'voice'}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                      </svg>
+                      Voice
+                    </button>
+                  </div>
+                </fieldset>
+
+                {err && <div className="channel-create-form__error" role="alert">{err}</div>}
 
                 <div className="channel-create-form__actions">
-                  <button type="submit" className="channel-create-form__btn channel-create-form__btn--confirm" disabled={creating || !name.trim()} title="Create">{creating ? '…' : '✓'}</button>
-                  <button type="button" className="channel-create-form__btn channel-create-form__btn--cancel" onClick={() => { setShowForm(false); setName(''); setErr(null); setNewChannelType('text'); }} title="Cancel">✕</button>
+                  <button
+                    type="submit"
+                    className="channel-create-form__submit"
+                    disabled={creating || !name.trim()}
+                  >
+                    {creating ? 'Creating…' : 'Create channel'}
+                  </button>
+                  <button
+                    type="button"
+                    className="channel-create-form__cancel"
+                    onClick={handleCancelCreate}
+                    disabled={creating}
+                  >
+                    Cancel
+                  </button>
                 </div>
-                {err && <div className="channel-create-form__error">{err}</div>}
               </form>
             )}
           </div>

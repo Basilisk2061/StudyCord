@@ -4,6 +4,8 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import EtherealBackground from '../components/EtherealBackground';
 import AuthCharacters from '../components/AuthCharacters';
+import GoogleAuthButton from '../components/GoogleAuthButton';
+import { beginGoogleOAuth, normalizeEmail } from '../lib/authFlow';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -11,35 +13,57 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState(null);
   const [loadingLogin, setLoadingLogin] = useState(false);
+  const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [focusedField, setFocusedField] = useState(null);
 
   const navigate = useNavigate();
-  const { session, loading } = useAuth();
+  const { session, loading, recoveryMode } = useAuth();
 
   // Redirect to dashboard if already logged in
   useEffect(() => {
     if (!loading && session) {
-      navigate('/dashboard');
+      navigate(recoveryMode ? '/reset-password' : '/dashboard');
     }
-  }, [session, loading, navigate]);
+  }, [session, loading, navigate, recoveryMode]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
+    if (loadingLogin || loadingGoogle) return;
     setError(null);
     setLoadingLogin(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const { error: loginError } = await supabase.auth.signInWithPassword({
+        email: normalizeEmail(email),
+        password,
+      });
 
-    if (error) {
-      setError(error.message);
-    } else {
-      navigate('/dashboard');
+      if (loginError) {
+        setError('Unable to sign in. Check your credentials and try again.');
+      } else {
+        navigate('/dashboard');
+      }
+    } catch {
+      setError('Unable to reach the authentication service. Please try again.');
+    } finally {
+      setLoadingLogin(false);
     }
+  };
 
-    setLoadingLogin(false);
+  const handleGoogleLogin = async () => {
+    if (loadingLogin || loadingGoogle) return;
+    setError(null);
+    setLoadingGoogle(true);
+    try {
+      const { error: oauthError } = await beginGoogleOAuth();
+      if (oauthError) {
+        setError('Unable to start Google sign in. Please try again.');
+        setLoadingGoogle(false);
+      }
+    } catch {
+      setError('Unable to start Google sign in. Please try again.');
+      setLoadingGoogle(false);
+    }
   };
 
   // Compute character state from which field is focused
@@ -55,7 +79,7 @@ export default function LoginPage() {
 
   return (
     <EtherealBackground>
-      <div className="auth-split">
+      <div className="auth-split auth-split--login">
         {/* Branding Panel */}
         <div className="auth-brand auth-page-transition">
           <div className="auth-brand__logo">
@@ -66,20 +90,9 @@ export default function LoginPage() {
           </p>
 
           <AuthCharacters charState={charState} />
+          <p className="auth-brand__mascot-note">Your study space is ready.</p>
 
           <ul className="auth-brand__features">
-            <li className="auth-brand__feature">
-              <div className="auth-brand__feature-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
-                  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
-                </svg>
-              </div>
-              <div className="auth-brand__feature-text">
-                <h4>Dedicated Channels</h4>
-                <p>Organize your courses and study materials cleanly.</p>
-              </div>
-            </li>
             <li className="auth-brand__feature">
               <div className="auth-brand__feature-icon">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -90,8 +103,20 @@ export default function LoginPage() {
                 </svg>
               </div>
               <div className="auth-brand__feature-text">
-                <h4>Real-time Collaboration</h4>
-                <p>Stay in sync with your study partners instantly.</p>
+                <h4>Study Together</h4>
+                <p>Chat, share resources, and connect with your study group.</p>
+              </div>
+            </li>
+            <li className="auth-brand__feature">
+              <div className="auth-brand__feature-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.35-4.35" />
+                </svg>
+              </div>
+              <div className="auth-brand__feature-text">
+                <h4>Search Smarter</h4>
+                <p>Find relevant study materials using semantic search.</p>
               </div>
             </li>
             <li className="auth-brand__feature">
@@ -102,8 +127,8 @@ export default function LoginPage() {
                 </svg>
               </div>
               <div className="auth-brand__feature-text">
-                <h4>Focus Driven</h4>
-                <p>A distraction-free environment for deep work.</p>
+                <h4>Learn with AI</h4>
+                <p>Generate summaries, answers, flashcards, and revision quizzes.</p>
               </div>
             </li>
           </ul>
@@ -117,7 +142,7 @@ export default function LoginPage() {
               <p className="auth-subtitle">Sign in to your StudyCord account</p>
             </div>
 
-            {error && <div className="error-message">{error}</div>}
+            {error && <div className="error-message" role="alert">{error}</div>}
 
             <form onSubmit={handleLogin}>
               <div className="form-group">
@@ -132,11 +157,16 @@ export default function LoginPage() {
                   onFocus={() => setFocusedField('email')}
                   onBlur={() => setFocusedField(null)}
                   required
+                  autoComplete="email"
+                  disabled={loadingLogin || loadingGoogle}
                 />
               </div>
 
               <div className="form-group">
-                <label className="form-label" htmlFor="login-password">Password</label>
+                <div className="form-label-row">
+                  <label className="form-label" htmlFor="login-password">Password</label>
+                  <Link to="/forgot-password" className="auth-forgot-link">Forgot password?</Link>
+                </div>
                 <div className="password-field">
                   <input
                     id="login-password"
@@ -148,13 +178,14 @@ export default function LoginPage() {
                     onFocus={() => setFocusedField('password')}
                     onBlur={() => setFocusedField(null)}
                     required
+                    autoComplete="current-password"
+                    disabled={loadingLogin || loadingGoogle}
                   />
                   <button
                     type="button"
                     className="password-toggle"
                     onClick={() => setShowPassword((prev) => !prev)}
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    tabIndex={-1}
                   >
                     {showPassword ? <EyeOffIcon /> : <EyeIcon />}
                   </button>
@@ -164,11 +195,18 @@ export default function LoginPage() {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={loadingLogin}
+                disabled={loadingLogin || loadingGoogle}
               >
                 {loadingLogin ? 'Signing in...' : 'Sign In'}
               </button>
             </form>
+
+            <div className="auth-separator"><span>or</span></div>
+            <GoogleAuthButton
+              disabled={loadingLogin || loadingGoogle}
+              pending={loadingGoogle}
+              onClick={handleGoogleLogin}
+            />
 
             <div className="auth-footer">
               Don&apos;t have an account?{' '}

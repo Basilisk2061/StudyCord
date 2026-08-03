@@ -4,6 +4,8 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import EtherealBackground from '../components/EtherealBackground';
 import AuthCharacters from '../components/AuthCharacters';
+import GoogleAuthButton from '../components/GoogleAuthButton';
+import { beginGoogleOAuth, normalizeEmail } from '../lib/authFlow';
 
 export default function SignupPage() {
   const [email, setEmail] = useState('');
@@ -14,20 +16,22 @@ export default function SignupPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [loadingSignup, setLoadingSignup] = useState(false);
+  const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [focusedField, setFocusedField] = useState(null);
 
   const navigate = useNavigate();
-  const { session, loading } = useAuth();
+  const { session, loading, recoveryMode } = useAuth();
 
   // Redirect to dashboard if already logged in
   useEffect(() => {
     if (!loading && session) {
-      navigate('/dashboard');
+      navigate(recoveryMode ? '/reset-password' : '/dashboard');
     }
-  }, [session, loading, navigate]);
+  }, [session, loading, navigate, recoveryMode]);
 
   const handleSignup = async (e) => {
     e.preventDefault();
+    if (loadingSignup || loadingGoogle) return;
     setError(null);
     setSuccess(false);
 
@@ -38,24 +42,42 @@ export default function SignupPage() {
 
     setLoadingSignup(true);
 
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
+    try {
+      const { data, error: signupError } = await supabase.auth.signUp({
+        email: normalizeEmail(email),
+        password,
+      });
 
-    if (error) {
-      setError(error.message);
-    } else {
-      if (data.session) {
-        // Auto-login is enabled and worked
-        navigate('/dashboard');
+      if (signupError) {
+        setError('Unable to create the account. Check your details and try again.');
       } else {
-        // Email confirmation required
-        setSuccess(true);
+        if (data.session) {
+          navigate('/dashboard');
+        } else {
+          setSuccess(true);
+        }
       }
+    } catch {
+      setError('Unable to reach the authentication service. Please try again.');
+    } finally {
+      setLoadingSignup(false);
     }
+  };
 
-    setLoadingSignup(false);
+  const handleGoogleSignup = async () => {
+    if (loadingSignup || loadingGoogle) return;
+    setError(null);
+    setLoadingGoogle(true);
+    try {
+      const { error: oauthError } = await beginGoogleOAuth();
+      if (oauthError) {
+        setError('Unable to start Google sign in. Please try again.');
+        setLoadingGoogle(false);
+      }
+    } catch {
+      setError('Unable to start Google sign in. Please try again.');
+      setLoadingGoogle(false);
+    }
   };
 
   // Compute character state from which field is focused
@@ -139,7 +161,7 @@ export default function SignupPage() {
               <p className="auth-subtitle">Join StudyCord to get started</p>
             </div>
 
-            {error && <div className="error-message">{error}</div>}
+            {error && <div className="error-message" role="alert">{error}</div>}
             {success && (
               <div className="success-message">
                 Registration successful! Please check your email to confirm your account.
@@ -159,6 +181,8 @@ export default function SignupPage() {
                   onFocus={() => setFocusedField('email')}
                   onBlur={() => setFocusedField(null)}
                   required
+                  autoComplete="email"
+                  disabled={loadingSignup || loadingGoogle}
                 />
               </div>
 
@@ -175,6 +199,8 @@ export default function SignupPage() {
                     onFocus={() => setFocusedField('password')}
                     onBlur={() => setFocusedField(null)}
                     required
+                    autoComplete="new-password"
+                    disabled={loadingSignup || loadingGoogle}
                   />
                   <button
                     type="button"
@@ -201,6 +227,8 @@ export default function SignupPage() {
                     onFocus={() => setFocusedField('confirmPassword')}
                     onBlur={() => setFocusedField(null)}
                     required
+                    autoComplete="new-password"
+                    disabled={loadingSignup || loadingGoogle}
                   />
                   <button
                     type="button"
@@ -217,11 +245,18 @@ export default function SignupPage() {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={loadingSignup}
+                disabled={loadingSignup || loadingGoogle}
               >
                 {loadingSignup ? 'Creating account...' : 'Create Account'}
               </button>
             </form>
+
+            <div className="auth-separator"><span>or</span></div>
+            <GoogleAuthButton
+              disabled={loadingSignup || loadingGoogle}
+              pending={loadingGoogle}
+              onClick={handleGoogleSignup}
+            />
 
             <div className="auth-footer">
               Already have an account?{' '}

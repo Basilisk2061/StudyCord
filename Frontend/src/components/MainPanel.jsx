@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { apiRequest } from '../lib/api';
@@ -14,7 +14,18 @@ import {
   deleteOwnMessage,
   removeDeletedMessage,
 } from '../lib/lifecycleApi';
+import {
+  fetchChannelPins,
+  indexPinsByMessage,
+  pinMessage,
+  unpinMessage,
+} from '../lib/pinningApi';
+import { hasServerPermission } from '../lib/permissions';
 import MessageAttachment from './MessageAttachment';
+import PinnedMessagesPanel, { PinIcon } from './PinnedMessagesPanel';
+import NeutralHomeState from './NeutralHomeState';
+import SelectedServerHomeState from './SelectedServerHomeState';
+import DismissableMenu from './DismissableMenu';
 
 // ---------- constants ----------
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -30,8 +41,12 @@ const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.
 export default function MainPanel({
   serverName, channelName, channelType, channelId, userEmail, profile,
   onLogout, channelSidebarOpen, onToggleChannelSidebar, onMobileBack,
-  serversCount, channelsCount, activeServerId, userId, onOpenResource,
+  server, activeServerId, userId, onOpenResource,
+  currentRole,
   resourceRatingOverrides = {},
+  onCreateServerRequest,
+  onJoinServerRequest,
+  onCreateChannelRequest,
 }) {
   const navigate = useNavigate();
   const hasChannel = channelName && serverName;
@@ -45,6 +60,13 @@ export default function MainPanel({
   const [deleteCandidate, setDeleteCandidate] = useState(null);
   const [deletingMessageId, setDeletingMessageId] = useState(null);
   const [deleteError, setDeleteError] = useState('');
+  const [pinnedMessages, setPinnedMessages] = useState([]);
+  const [pinsLoading, setPinsLoading] = useState(false);
+  const [pinsError, setPinsError] = useState('');
+  const [pinActionError, setPinActionError] = useState('');
+  const [pendingPinMessageId, setPendingPinMessageId] = useState(null);
+  const [pinnedPanelOpen, setPinnedPanelOpen] = useState(false);
+  const pinRequestRef = useRef(0);
   const messagesEndRef = useRef(null);
 
   // ---------- file attachment state ----------
@@ -58,11 +80,14 @@ export default function MainPanel({
   const resourceRefreshTimersRef = useRef([]);
 
   const resourceIds = [...new Set(
-    messages
+    [...messages, ...pinnedMessages]
       .map((message) => message.attachment?.resource_id)
       .filter(Boolean),
   )];
   const resourceIdsKey = resourceIds.slice().sort().join(',');
+  const pinsByMessageId = indexPinsByMessage(pinnedMessages);
+  const canManagePins = hasServerPermission(currentRole, 'manage_server');
+  const canModerateMessages = canManagePins;
 
   useEffect(() => {
     resourceRefreshTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -115,6 +140,63 @@ export default function MainPanel({
     );
   };
 
+  const refreshPinnedMessages = useCallback(async (showLoading = false) => {
+    const requestId = ++pinRequestRef.current;
+    if (!channelId) {
+      setPinnedMessages([]);
+      setPinsError('');
+      setPinsLoading(false);
+      return;
+    }
+
+    if (showLoading) setPinsLoading(true);
+    try {
+      const rows = await fetchChannelPins(apiRequest, channelId);
+      if (pinRequestRef.current !== requestId) return;
+      setPinnedMessages(Array.isArray(rows) ? rows : []);
+      setPinsError('');
+    } catch (error) {
+      if (pinRequestRef.current !== requestId) return;
+      setPinsError(
+        error?.message || 'Pinned messages could not be loaded.',
+      );
+    } finally {
+      if (pinRequestRef.current === requestId) setPinsLoading(false);
+    }
+  }, [channelId]);
+
+  useEffect(() => {
+    if (!channelId) {
+      pinRequestRef.current += 1;
+      Promise.resolve().then(() => {
+        setPinnedMessages([]);
+        setPinnedPanelOpen(false);
+        setPinsError('');
+      });
+      return;
+    }
+
+    Promise.resolve().then(() => refreshPinnedMessages(true));
+    const pinChannel = supabase
+      .channel(`pinned_messages:channel_id=eq.${channelId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'pinned_messages',
+          filter: `channel_id=eq.${channelId}`,
+        },
+        () => refreshPinnedMessages(false),
+      )
+      .subscribe();
+
+    return () => {
+      pinRequestRef.current += 1;
+      supabase.removeChannel(pinChannel);
+    };
+  }, [channelId, refreshPinnedMessages]);
+
   // ---------- fetch attachments for a list of message IDs ----------
   const fetchAttachments = async (messageIds) => {
     if (!messageIds.length) return {};
@@ -144,6 +226,7 @@ export default function MainPanel({
     setOpenMessageMenuId(null);
     setDeleteCandidate(null);
     setDeleteError('');
+    setPinActionError('');
 
     const loadMessages = async () => {
       setMessagesLoading(true);
@@ -244,6 +327,9 @@ export default function MainPanel({
           const deletedMessageId = payload.old?.id;
           if (!deletedMessageId) return;
           setMessages((current) => removeDeletedMessage(current, deletedMessageId));
+          setPinnedMessages((current) => current.filter(
+            (pin) => pin.message_id !== deletedMessageId,
+          ));
           setOpenMessageMenuId((current) => (
             current === deletedMessageId ? null : current
           ));
@@ -495,6 +581,45 @@ export default function MainPanel({
     }
   };
 
+  const handlePinAction = async (messageId, shouldPin) => {
+    if (!canManagePins || pendingPinMessageId) return;
+    setPendingPinMessageId(messageId);
+    setPinActionError('');
+    try {
+      if (shouldPin) {
+        await pinMessage(apiRequest, messageId);
+      } else {
+        await unpinMessage(apiRequest, messageId);
+      }
+      setOpenMessageMenuId(null);
+      await refreshPinnedMessages(false);
+    } catch (error) {
+      const message = error?.message
+        || `The message could not be ${shouldPin ? 'pinned' : 'unpinned'}.`;
+      setPinActionError(message);
+      if (pinnedPanelOpen) setPinsError(message);
+    } finally {
+      setPendingPinMessageId(null);
+    }
+  };
+
+  const handleJumpToMessage = (messageId) => {
+    const element = document.getElementById(`message-${messageId}`);
+    if (!element) {
+      setPinsError('That message is not currently loaded in this channel.');
+      return;
+    }
+    setPinnedPanelOpen(false);
+    window.requestAnimationFrame(() => {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      element.classList.add('message-row--jump-highlight');
+      window.setTimeout(
+        () => element.classList.remove('message-row--jump-highlight'),
+        1800,
+      );
+    });
+  };
+
   // ---------- format timestamp ----------
   const formatTime = (dateString) => {
     const date = new Date(dateString);
@@ -581,6 +706,9 @@ export default function MainPanel({
       const avatarUrl = msg.profiles?.avatar_url;
       const initial = username[0]?.toUpperCase() || '?';
       const isOwnMessage = msg.user_id === userId;
+      const isPinned = Boolean(pinsByMessageId[msg.id]);
+      const canDeleteMessage = isOwnMessage || canModerateMessages;
+      const hasMessageActions = canDeleteMessage || canManagePins;
 
       items.push(
         <div className="message-row" key={msg.id} id={`message-${msg.id}`}>
@@ -603,8 +731,12 @@ export default function MainPanel({
             <div className="message-header">
               <span className="message-author">{username}</span>
               <span className="message-time">{formatTime(msg.created_at)}</span>
-              {isOwnMessage && (
-                <div className="message-actions">
+              {hasMessageActions && (
+                <DismissableMenu
+                  className="message-actions"
+                  open={openMessageMenuId === msg.id}
+                  onDismiss={() => setOpenMessageMenuId(null)}
+                >
                   <button
                     type="button"
                     className="message-actions__trigger"
@@ -618,23 +750,45 @@ export default function MainPanel({
                   </button>
                   {openMessageMenuId === msg.id && (
                     <div className="message-actions__menu" role="menu">
-                      <button
-                        type="button"
-                        className="message-actions__delete"
-                        role="menuitem"
-                        onClick={() => {
-                          setDeleteCandidate(msg);
-                          setDeleteError('');
-                          setOpenMessageMenuId(null);
-                        }}
-                      >
-                        Delete message
-                      </button>
+                      {canManagePins && (
+                        <button
+                          type="button"
+                          className="message-actions__item"
+                          role="menuitem"
+                          disabled={pendingPinMessageId === msg.id}
+                          onClick={() => handlePinAction(msg.id, !isPinned)}
+                        >
+                          <PinIcon size={13} />
+                          {pendingPinMessageId === msg.id
+                            ? (isPinned ? 'Unpinning…' : 'Pinning…')
+                            : (isPinned ? 'Unpin message' : 'Pin message')}
+                        </button>
+                      )}
+                      {canDeleteMessage && (
+                        <button
+                          type="button"
+                          className="message-actions__item message-actions__delete"
+                          role="menuitem"
+                          onClick={() => {
+                            setDeleteCandidate(msg);
+                            setDeleteError('');
+                            setOpenMessageMenuId(null);
+                          }}
+                        >
+                          {isOwnMessage ? 'Delete' : 'Delete Message'}
+                        </button>
+                      )}
                     </div>
                   )}
-                </div>
+                </DismissableMenu>
               )}
             </div>
+            {isPinned && (
+              <div className="message-pinned-indicator">
+                <PinIcon size={11} />
+                <span>Pinned</span>
+              </div>
+            )}
             {msg.content && (
               <div className="message-text">{msg.content}</div>
             )}
@@ -711,6 +865,25 @@ export default function MainPanel({
         </div>
 
         <div className="main-panel__topbar-right">
+          {hasChannel && channelType !== 'voice' && (
+            <button
+              type="button"
+              className="main-panel__pins-button"
+              title="Pinned Messages"
+              aria-label="Pinned Messages"
+              onClick={() => {
+                setPinnedPanelOpen(true);
+                refreshPinnedMessages(true);
+              }}
+            >
+              <PinIcon size={15} />
+              {pinnedMessages.length > 0 && (
+                <span aria-label={`${pinnedMessages.length} pinned messages`}>
+                  {pinnedMessages.length}
+                </span>
+              )}
+            </button>
+          )}
           <button 
             className="main-panel__profile-btn" 
             onClick={() => navigate('/profile')}
@@ -757,6 +930,18 @@ export default function MainPanel({
                 </svg>
                 <span>{uploadError}</span>
                 <button className="compose-error__dismiss" onClick={() => setUploadError('')} aria-label="Dismiss">×</button>
+              </div>
+            )}
+            {pinActionError && (
+              <div className="compose-error" role="alert">
+                <span>{pinActionError}</span>
+                <button
+                  className="compose-error__dismiss"
+                  onClick={() => setPinActionError('')}
+                  aria-label="Dismiss pin error"
+                >
+                  ×
+                </button>
               </div>
             )}
 
@@ -854,35 +1039,43 @@ export default function MainPanel({
               </form>
             </div>
           </>
+        ) : activeServerId ? (
+          <SelectedServerHomeState
+            server={server}
+            currentRole={currentRole}
+            onCreateChannel={onCreateChannelRequest}
+          />
         ) : (
-          <div className="main-panel__welcome" style={{ overflow: 'auto', flex: 1 }}>
-            <div className="main-panel__welcome-card">
-              <h2 className="main-panel__welcome-title">Welcome back!</h2>
-              <p className="main-panel__welcome-subtitle">
-                Select a server from the sidebar, then pick a channel to get started.
-              </p>
-              <div className="main-panel__quick-stats">
-                <div className="main-panel__stat">
-                  <span className="main-panel__stat-value">{serversCount ?? 0}</span>
-                  <span className="main-panel__stat-label">Servers</span>
-                </div>
-                <div className="main-panel__stat">
-                  <span className="main-panel__stat-value">{channelsCount ?? 0}</span>
-                  <span className="main-panel__stat-label">Channels</span>
-                </div>
-              </div>
-            </div>
-            <div className="main-panel__tips">
-              <h3 className="main-panel__tips-title">Quick Tips</h3>
-              <ul className="main-panel__tips-list">
-                <li>Click a server icon on the left to switch servers</li>
-                <li>Browse channels in the sidebar to jump into a conversation</li>
-                <li>Use the + button to create a new server or channel</li>
-              </ul>
-            </div>
-          </div>
+          <NeutralHomeState
+            profile={profile}
+            userEmail={userEmail}
+            onCreateServer={onCreateServerRequest}
+            onJoinServer={onJoinServerRequest}
+          />
         )}
       </div>
+      {pinnedPanelOpen && (
+        <PinnedMessagesPanel
+          pins={pinnedMessages}
+          loading={pinsLoading}
+          error={pinsError}
+          canManagePins={canManagePins}
+          pendingMessageId={pendingPinMessageId}
+          resourceMetadataById={Object.fromEntries(
+            Object.entries(resourceMetadataById).map(([resourceId, metadata]) => [
+              resourceId,
+              {
+                ...metadata,
+                ...resourceRatingOverrides[resourceId],
+              },
+            ]),
+          )}
+          onClose={() => setPinnedPanelOpen(false)}
+          onJump={handleJumpToMessage}
+          onUnpin={(messageId) => handlePinAction(messageId, false)}
+          onOpenResource={onOpenResource}
+        />
+      )}
       {deleteCandidate && (
         <div
           className="modal-overlay"
@@ -924,7 +1117,11 @@ export default function MainPanel({
                 disabled={Boolean(deletingMessageId)}
                 onClick={handleDeleteMessage}
               >
-                {deletingMessageId ? 'Deleting…' : 'Delete message'}
+                {deletingMessageId
+                  ? 'Deleting…'
+                  : deleteCandidate.user_id === userId
+                    ? 'Delete'
+                    : 'Delete Message'}
               </button>
             </div>
           </div>

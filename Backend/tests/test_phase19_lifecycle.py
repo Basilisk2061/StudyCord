@@ -118,18 +118,21 @@ class Phase19LifecycleTests(unittest.TestCase):
             "supabase_user": caller,
         }
 
-    def target(self, path=None):
+    def target(self, path=None, user_id=None):
+        target_user_id = user_id or self.user_id
         return {
-            "storage_path": path or self.path,
+            "storage_path": path or (
+                f"{self.server_id}/{self.channel_id}/{target_user_id}/"
+                "1720000000000-notes.pdf"
+            ),
             "server_id": self.server_id,
             "channel_id": self.channel_id,
-            "user_id": self.user_id,
+            "user_id": target_user_id,
         }
 
-    def test_target_parser_accepts_only_caller_scoped_canonical_paths(self):
+    def test_target_parser_accepts_only_rpc_scoped_canonical_paths(self):
         parsed = parse_message_deletion_targets(
             [self.target(), self.target()],
-            expected_user_id=self.user_id,
         )
         self.assertEqual([target.storage_path for target in parsed], [self.path])
 
@@ -144,8 +147,17 @@ class Phase19LifecycleTests(unittest.TestCase):
                 with self.assertRaises(LifecycleTargetError):
                     parse_message_deletion_targets(
                         [self.target(unsafe_path)],
-                        expected_user_id=self.user_id,
                     )
+
+    def test_target_parser_accepts_original_author_paths_for_moderation(self):
+        author_id = str(uuid.uuid4())
+        target = self.target(user_id=author_id)
+        parsed = parse_message_deletion_targets([target])
+        self.assertEqual(parsed[0].user_id, author_id)
+        self.assertIn(f"/{author_id}/", parsed[0].storage_path)
+
+        with self.assertRaises(LifecycleTargetError):
+            parse_message_deletion_targets([target, self.target()])
 
     def test_message_delete_requires_authentication(self):
         with TestClient(main.app) as api:

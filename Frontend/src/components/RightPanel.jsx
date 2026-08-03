@@ -11,10 +11,11 @@ import { matchesChatSession, persistChatTurn } from '../lib/ragChatFlow';
 import { getSessionStudyOutputs } from '../lib/ragStudyOutputs';
 import { generateAndPersistStudyOutput } from '../lib/ragStudyOutputFlow';
 
-const SUGGESTED_PROMPTS = [
-  'Explain binary search trees',
-  'Quiz me on Chapter 7',
-  'Summarize sorting algorithms',
+const AI_FEATURES = [
+  'Ask questions',
+  'Summarize documents',
+  'Create flashcards',
+  'Generate quizzes',
 ];
 
 const AVATAR_COLORS = ['#262626', '#2F2F2F', '#404040', '#525252', '#737373', '#A3A3A3'];
@@ -704,43 +705,181 @@ export default function RightPanel({
           padding-bottom: 16px;
           margin-bottom: 8px;
         }
-        .ai-helper__desc {
-          font-size: 12px;
-          color: var(--text-secondary);
-          line-height: 1.5;
-          margin: 0 0 12px 0;
+        .ai-study-empty {
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
         }
-        .ai-sidebar-upload {
-          border: 1px dashed var(--border);
-          border-radius: var(--radius-sm);
-          padding: 18px 12px;
+        .ai-study-history-link {
+          flex-shrink: 0;
+        }
+        .ai-quick-study {
+          margin-bottom: 12px;
+        }
+        .ai-quick-actions {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 6px;
+          margin-top: 8px;
+        }
+        .ai-quick-action {
+          min-width: 0;
+          padding: 7px 6px;
+          color: var(--text-secondary);
+          background-color: var(--bg-darkest);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-xs);
+          font-size: 10.5px;
+          font-weight: 500;
           text-align: center;
-          background-color: var(--bg-surface);
           cursor: pointer;
-          transition: all var(--transition);
+          transition: background-color var(--transition), color var(--transition), border-color var(--transition);
+        }
+        .ai-quick-action:hover,
+        .ai-quick-action--active {
+          color: var(--text-primary);
+          background-color: var(--bg-elevated);
+          border-color: var(--border-subtle);
+        }
+        .shared-resources-empty {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          color: var(--text-muted);
+          font-size: 11px;
+          line-height: 1.45;
+        }
+        .shared-resources-empty__icon {
+          width: 14px;
+          height: 14px;
+          flex-shrink: 0;
+          margin-top: 1px;
+        }
+        .ai-study-tagline {
+          margin: 0 0 12px;
+          color: var(--text-secondary);
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .ai-study-upload-card,
+        .ai-study-document-card {
+          width: 100%;
+          min-height: 150px;
           display: flex;
           flex-direction: column;
           align-items: center;
+          justify-content: center;
+          gap: 10px;
+          padding: 20px 14px;
+          color: var(--text-primary);
+          background-color: var(--bg-surface);
+          border: 1px dashed var(--border);
+          border-radius: var(--radius-sm);
+          text-align: center;
         }
-        .ai-sidebar-upload:hover {
-          border-color: var(--text-muted);
+        .ai-study-upload-card {
+          cursor: pointer;
+          transition: background-color var(--transition), border-color var(--transition);
+        }
+        .ai-study-upload-card:hover:not(:disabled) {
           background-color: var(--bg-hover);
+          border-color: var(--text-muted);
         }
-        .ai-sidebar-upload__icon {
-          width: 24px;
-          height: 24px;
+        .ai-study-upload-card:disabled {
+          cursor: wait;
+          opacity: 0.7;
+        }
+        .ai-study-upload-card__icon {
+          width: 28px;
+          height: 28px;
           color: var(--text-muted);
-          margin-bottom: 6px;
         }
-        .ai-sidebar-upload__text {
+        .ai-study-upload-card__title {
+          font-size: 12px;
+          font-weight: 600;
+        }
+        .ai-study-upload-card__formats {
+          color: var(--text-muted);
+          font-size: 10.5px;
+          letter-spacing: 0.03em;
+        }
+        .ai-features,
+        .ai-recent-sessions {
+          padding-top: 14px;
+          border-top: 1px solid var(--border);
+        }
+        .ai-features__title,
+        .ai-quick-study__title,
+        .ai-recent-sessions__title {
+          margin: 0;
+          color: var(--text-primary);
           font-size: 11px;
-          font-weight: 500;
+          font-weight: 600;
         }
-        .ai-history-button {
+        .ai-features__list {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 7px 10px;
+          margin: 9px 0 0;
+          padding: 0;
+          list-style: none;
+        }
+        .ai-features__item {
+          position: relative;
+          padding-left: 10px;
+          color: var(--text-muted);
+          font-size: 10.5px;
+          line-height: 1.35;
+        }
+        .ai-features__item::before {
+          content: '';
+          position: absolute;
+          top: 0.55em;
+          left: 0;
+          width: 3px;
+          height: 3px;
+          border-radius: 50%;
+          background-color: currentColor;
+        }
+        .ai-recent-sessions .ai-study-history-link {
+          display: inline-flex;
+          width: auto;
+          margin-top: 7px;
+          padding: 5px 9px;
+          font-size: 10px;
+        }
+        .ai-study-document-card {
+          position: relative;
+          border-style: solid;
+        }
+        .ai-study-document-card__name {
           width: 100%;
-          margin-top: 8px;
-          padding: 7px 10px;
+          overflow: hidden;
+          color: var(--text-primary);
+          font-size: 13px;
+          font-weight: 600;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .ai-study-document-card__status {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: var(--text-secondary);
           font-size: 11px;
+        }
+        .ai-study-document-card__status-icon {
+          width: 14px;
+          height: 14px;
+          color: var(--text-muted);
+        }
+        .ai-study-document-card__new {
+          position: absolute;
+          top: 10px;
+          right: 10px;
+          width: auto;
+          padding: 3px 7px;
+          font-size: 9px;
         }
         .ai-history {
           display: flex;
@@ -843,54 +982,6 @@ export default function RightPanel({
           border: 1px dashed var(--border);
           border-radius: var(--radius-sm);
           text-align: center;
-        }
-        .ai-sidebar-doc {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 8px 12px;
-          background-color: var(--bg-surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-sm);
-          margin-bottom: 12px;
-          gap: 8px;
-        }
-        .ai-sidebar-doc__name {
-          font-size: 12px;
-          font-weight: 500;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          flex: 1;
-        }
-        .ai-sidebar-tabs {
-          display: flex;
-          background-color: var(--bg-darkest);
-          padding: 3px;
-          border-radius: var(--radius-xs);
-          margin-bottom: 12px;
-          gap: 3px;
-        }
-        .ai-sidebar-tab {
-          flex: 1;
-          background: transparent;
-          border: 1px solid transparent;
-          color: var(--text-muted);
-          padding: 5px 4px;
-          font-size: 11px;
-          font-weight: 600;
-          cursor: pointer;
-          border-radius: var(--radius-xs);
-          text-align: center;
-          transition: all var(--transition);
-        }
-        .ai-sidebar-tab:hover {
-          color: var(--text-primary);
-        }
-        .ai-sidebar-tab--active {
-          background-color: var(--bg-elevated);
-          color: var(--text-primary);
-          border-color: var(--border);
         }
         .ai-sidebar-content {
           max-height: 340px;
@@ -1594,107 +1685,90 @@ export default function RightPanel({
         {assistantMode === 'history' ? (
           renderHistory()
         ) : !uploadedDoc ? (
-          <>
-            <p className="ai-helper__desc">
-              Upload a study document to start using AI tools.
-            </p>
-            <div 
-              className="ai-sidebar-upload"
+          <div className="ai-study-empty">
+            <p className="ai-study-tagline">Study smarter with AI.</p>
+            <input
+              type="file"
+              ref={fileInputRef}
+              style={{ display: 'none' }}
+              onChange={handleFileChange}
+              accept=".pdf,.txt,.docx"
+            />
+            <button
+              type="button"
+              className="ai-study-upload-card"
               onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
             >
-              <input 
-                type="file"
-                ref={fileInputRef}
-                style={{ display: 'none' }}
-                onChange={handleFileChange}
-                accept=".pdf,.txt,.docx"
-              />
-              {uploading ? (
-                <>
-                  <svg className="ai-sidebar-upload__icon ai-spinner" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                  </svg>
-                  <span className="ai-sidebar-upload__text">Uploading...</span>
-                </>
-              ) : (
-                <>
-                  <svg className="ai-sidebar-upload__icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg className={`ai-study-upload-card__icon ${uploading ? 'ai-spinner' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                {uploading ? (
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                ) : (
+                  <>
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                     <polyline points="17 8 12 3 7 8" />
                     <line x1="12" y1="3" x2="12" y2="15" />
-                  </svg>
-                  <span className="ai-sidebar-upload__text">Upload PDF/TXT/DOCX</span>
-                </>
-              )}
-            </div>
-            <button
-              type="button"
-              className="btn btn-secondary ai-history-button"
-              onClick={openHistory}
-            >
-              History
+                  </>
+                )}
+              </svg>
+              <span className="ai-study-upload-card__title">
+                {uploading ? 'Uploading...' : 'Upload Study Material'}
+              </span>
+              <span className="ai-study-upload-card__formats">PDF &bull; DOCX &bull; TXT</span>
             </button>
-            
-            {/* Suggested prompts list (Only shown if no doc is uploaded) */}
-            <div className="ai-helper__prompts" style={{ marginTop: '16px' }}>
-              {SUGGESTED_PROMPTS.map((prompt) => (
-                <span key={prompt} className="ai-helper__prompt">
-                  {prompt}
-                </span>
-              ))}
-            </div>
-          </>
+            <section className="ai-features" aria-labelledby="ai-features-title">
+              <h4 className="ai-features__title" id="ai-features-title">AI Features</h4>
+              <ul className="ai-features__list">
+                {AI_FEATURES.map((feature) => (
+                  <li key={feature} className="ai-features__item">{feature}</li>
+                ))}
+              </ul>
+            </section>
+            <section className="ai-recent-sessions" aria-labelledby="ai-recent-sessions-title">
+              <h4 className="ai-recent-sessions__title" id="ai-recent-sessions-title">Recent Sessions</h4>
+              <button type="button" className="btn btn-secondary ai-study-history-link" onClick={openHistory}>
+                View History &rarr;
+              </button>
+            </section>
+          </div>
         ) : (
           <>
-            <div className="ai-sidebar-doc">
-              <span className="ai-sidebar-doc__name" title={uploadedDoc.filename}>
+            <p className="ai-study-tagline">Study smarter with AI.</p>
+            <div className="ai-study-document-card">
+              <button
+                type="button"
+                className="btn btn-secondary ai-study-document-card__new"
+                onClick={startNewStudy}
+              >
+                New
+              </button>
+              <span className="ai-study-document-card__name" title={uploadedDoc.filename}>
                 {uploadedDoc.filename}
               </span>
-              <div style={{ display: 'flex', gap: '4px' }}>
-                <button
-                  className="btn btn-secondary"
-                  style={{ width: 'auto', padding: '3px 7px', fontSize: '9px' }}
-                  onClick={openHistory}
-                >
-                  History
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  style={{ width: 'auto', padding: '3px 7px', fontSize: '9px' }}
-                  onClick={startNewStudy}
-                >
-                  New
-                </button>
+              <span className="ai-study-document-card__status">
+                <svg className="ai-study-document-card__status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                Ready for AI
+              </span>
+            </div>
+
+            <div className="ai-quick-study">
+              <h4 className="ai-quick-study__title">Quick Study Actions</h4>
+              <div className="ai-quick-actions">
+                <button type="button" className={`ai-quick-action ${activeTab === 'summary' ? 'ai-quick-action--active' : ''}`} onClick={() => selectTab('summary')}>Summary</button>
+                <button type="button" className={`ai-quick-action ${activeTab === 'flashcards' ? 'ai-quick-action--active' : ''}`} onClick={() => selectTab('flashcards')}>Flashcards</button>
+                <button type="button" className={`ai-quick-action ${activeTab === 'mcq' ? 'ai-quick-action--active' : ''}`} onClick={() => selectTab('mcq')}>Practice Quiz</button>
+                <button type="button" className={`ai-quick-action ${activeTab === 'chat' ? 'ai-quick-action--active' : ''}`} onClick={() => selectTab('chat')}>Ask Questions</button>
               </div>
             </div>
 
-            {/* Tab Navigation */}
-            <div className="ai-sidebar-tabs">
-              <button 
-                className={`ai-sidebar-tab ${activeTab === 'summary' ? 'ai-sidebar-tab--active' : ''}`}
-                onClick={() => selectTab('summary')}
-              >
-                Summary
+            <section className="ai-recent-sessions" aria-labelledby="ai-session-history-title">
+              <h4 className="ai-recent-sessions__title" id="ai-session-history-title">Recent Sessions</h4>
+              <button type="button" className="btn btn-secondary ai-study-history-link" onClick={openHistory}>
+                View History &rarr;
               </button>
-              <button 
-                className={`ai-sidebar-tab ${activeTab === 'chat' ? 'ai-sidebar-tab--active' : ''}`}
-                onClick={() => selectTab('chat')}
-              >
-                Chat
-              </button>
-              <button 
-                className={`ai-sidebar-tab ${activeTab === 'flashcards' ? 'ai-sidebar-tab--active' : ''}`}
-                onClick={() => selectTab('flashcards')}
-              >
-                Cards
-              </button>
-              <button 
-                className={`ai-sidebar-tab ${activeTab === 'mcq' ? 'ai-sidebar-tab--active' : ''}`}
-                onClick={() => selectTab('mcq')}
-              >
-                MCQs
-              </button>
-            </div>
+            </section>
 
             {/* Tabbed Content Area */}
             <div className="ai-sidebar-content">
@@ -2085,9 +2159,12 @@ export default function RightPanel({
         /* ── GENERIC SHARED RESOURCES (Home View Only) ── */
         <div className="right-panel__section">
           <h3 className="right-panel__section-title">Shared Resources</h3>
-          <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-            Select a study server and channel to view shared resources.
-          </p>
+          <div className="shared-resources-empty">
+            <svg className="shared-resources-empty__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2h9A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" />
+            </svg>
+            <span>Choose a server and channel to browse shared study materials.</span>
+          </div>
         </div>
       )}
 
