@@ -1,12 +1,27 @@
-# Python
+# ==========================
+# Python Backend
+# ==========================
 __pycache__/
 *.py[cod]
 *$py.class
 venv/
 .venv/
+
 Backend/.env
 Backend/data/rag1/
 Backend/evaluation/results/*.json
 Backend/evaluation/results/*.csv
 Backend/evaluation/datasets/local/
 Backend/evaluation/workspace/
+
+# ==========================
+# Frontend (React/Vite)
+# ==========================
+Frontend/node_modules/
+Frontend/dist/
+Frontend/.vite/
+Frontend/.env.local
+Frontend/.env.*.local
+
+# Optional
+Frontend/.DS_Store
