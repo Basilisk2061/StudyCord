@@ -44,7 +44,7 @@ class FakeChatResponse:
 
 
 class FakeChatModel:
-    async def ainvoke(self, prompt):
+    async def ainvoke(self, prompt, **_kwargs):
         if "structured summary" in prompt:
             return FakeChatResponse(
                 '{"executive_summary":"Session summary.",'
@@ -344,7 +344,11 @@ class Rag1SessionTests(unittest.TestCase):
                 "rag1.service._load_vector_store",
                 return_value=FakeVectorStore(),
             ) as load_vector_store,
-            patch("main.get_rag_chat_model", return_value=FakeChatModel()),
+            patch.object(
+                main.llm_provider_manager,
+                "generate",
+                side_effect=FakeChatModel().ainvoke,
+            ),
             patch("rag1.ingestion._build_embeddings") as build_embeddings,
             TestClient(main.app) as client,
         ):

@@ -62,7 +62,7 @@ class FakeChatResponse:
 
 
 class FakeChatModel:
-    async def ainvoke(self, prompt):
+    async def ainvoke(self, prompt, **_kwargs):
         if "revision flashcards" in prompt:
             return FakeChatResponse(
                 '[{"question":"What is supervised learning?",'
@@ -166,7 +166,11 @@ class Rag1IngestionTests(unittest.TestCase):
                 "rag1.ingestion._build_vector_store",
                 side_effect=self.fake_vector_builder,
             ),
-            patch("main.get_rag_chat_model", return_value=FakeChatModel()),
+            patch.object(
+                main.llm_provider_manager,
+                "generate",
+                side_effect=FakeChatModel().ainvoke,
+            ),
             TestClient(main.app) as client,
         ):
             response = client.post(

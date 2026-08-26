@@ -105,12 +105,26 @@ class Rag1ConversationTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def post_chat(self, payload, models):
+        async def generate(messages, **_kwargs):
+            is_contextualization = (
+                len(models) > 1
+                and isinstance(messages, list)
+                and "Rewrite the latest student question"
+                in messages[0].content
+            )
+            model = models[0] if is_contextualization else models[-1]
+            return await model.ainvoke(messages)
+
         with (
             patch(
                 "main._resolve_request_document",
                 return_value=self.resolved_document,
             ),
-            patch("main.get_rag_chat_model", side_effect=models),
+            patch.object(
+                main.llm_provider_manager,
+                "generate",
+                side_effect=generate,
+            ),
             TestClient(main.app) as client,
         ):
             return client.post("/api/rag/chat", json=payload)

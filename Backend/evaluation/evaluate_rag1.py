@@ -310,11 +310,25 @@ def load_dataset(path: str | Path) -> EvaluationDataset:
     )
 
 
+class _ProviderManagerModel:
+    """Evaluation adapter for the provider-neutral generation manager."""
+
+    def __init__(self, manager: Any, temperature: float):
+        self.manager = manager
+        self.temperature = temperature
+
+    async def ainvoke(self, prompt: Any):
+        return await self.manager.generate(
+            prompt,
+            temperature=self.temperature,
+        )
+
+
 def _default_model_factory(temperature: float):
     # Importing here keeps framework-only tests independent of backend startup.
-    from main import get_rag_chat_model
+    from main import llm_provider_manager
 
-    return get_rag_chat_model(temperature=temperature)
+    return _ProviderManagerModel(llm_provider_manager, temperature)
 
 
 async def run_rag1_query(
@@ -364,7 +378,7 @@ async def run_rag1_query(
     generation_started = clock()
     answer_model = model_factory(0.3)
     generated_answer = await generate_grounded_answer(
-        answer_model,
+        answer_model.ainvoke,
         build_grounded_answer_messages(
             "\n\n".join(contexts),
             case.history,
@@ -567,10 +581,19 @@ async def evaluate_dataset(
             "chunk_overlap": CHUNK_OVERLAP,
             "embedding_model": EMBEDDING_MODEL,
             "retrieval_k": RAG_RETRIEVAL_K,
-            "generation_provider": "OpenRouter",
-            "generation_model": os.getenv(
-                "OPENROUTER_MODEL",
-                "openrouter/auto",
+            "generation_provider": os.getenv(
+                "PRIMARY_LLM_PROVIDER",
+                "nvidia",
+            ),
+            "generation_model": (
+                os.getenv("NVIDIA_MODEL")
+                if os.getenv("PRIMARY_LLM_PROVIDER", "nvidia").lower()
+                == "nvidia"
+                else os.getenv("OPENROUTER_MODEL", "openrouter/auto")
+            ),
+            "fallback_generation_provider": os.getenv(
+                "FALLBACK_LLM_PROVIDER",
+                "openrouter",
             ),
             "quality_framework": "ragas==0.4.3",
             "quality_evaluator_model": os.getenv(

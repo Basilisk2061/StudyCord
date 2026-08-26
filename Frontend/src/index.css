@@ -2583,6 +2583,60 @@ body {
   margin-top: 20px;
 }
 
+.screen-share-options-modal {
+  max-width: 360px;
+  padding: 22px;
+}
+
+.screen-share-options-modal__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 11px 12px;
+  color: var(--text-primary);
+  background-color: var(--bg-darkest);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.screen-share-options-modal__option input {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin: 2px 0 0;
+  accent-color: #ffffff;
+}
+
+.screen-share-options-modal__option span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.screen-share-options-modal__option strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.screen-share-options-modal__option small {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+@media (max-width: 480px) {
+  .screen-share-options-modal {
+    padding: 20px;
+  }
+
+  .screen-share-options-modal .modal-card__actions {
+    flex-wrap: wrap;
+  }
+}
+
 /* ===================== CHANNEL CREATE ===================== */
 .channel-sidebar__create {
   padding: 2px 8px 10px;

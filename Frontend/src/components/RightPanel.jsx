@@ -715,7 +715,8 @@ export default function RightPanel({
           flex-shrink: 0;
         }
         .ai-quick-study {
-          margin-bottom: 12px;
+          margin-top: 18px;
+          margin-bottom: 0;
         }
         .ai-quick-actions {
           display: grid;
@@ -844,16 +845,54 @@ export default function RightPanel({
         }
         .ai-recent-sessions .ai-study-history-link {
           display: inline-flex;
+          flex-shrink: 0;
           width: auto;
-          margin-top: 7px;
+          margin-top: 0;
           padding: 5px 9px;
           font-size: 10px;
         }
+        .ai-recent-sessions__header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          min-width: 0;
+        }
+        .ai-recent-sessions--selected {
+          margin-top: 22px;
+        }
         .ai-study-document-card {
-          position: relative;
+          width: 100%;
+          height: 56px;
+          min-height: 56px;
+          display: flex;
+          flex-direction: row;
+          align-items: center;
+          justify-content: flex-start;
+          gap: 10px;
+          padding: 8px 10px;
+          color: var(--text-primary);
+          background-color: var(--bg-surface);
+          border: 1px solid var(--border);
           border-style: solid;
+          border-radius: var(--radius-sm);
           min-width: 0;
           max-width: 100%;
+          text-align: left;
+        }
+        .ai-study-document-card__file-icon {
+          width: 20px;
+          height: 20px;
+          flex: 0 0 20px;
+          color: var(--text-muted);
+        }
+        .ai-study-document-card__content {
+          display: flex;
+          flex: 1 1 auto;
+          flex-direction: column;
+          justify-content: center;
+          gap: 3px;
+          min-width: 0;
         }
         .ai-study-document-card__name {
           width: 100%;
@@ -870,20 +909,19 @@ export default function RightPanel({
         .ai-study-document-card__status {
           display: flex;
           align-items: center;
-          justify-content: center;
+          justify-content: flex-start;
           gap: 6px;
           color: var(--text-secondary);
-          font-size: 11px;
+          font-size: 10.5px;
         }
         .ai-study-document-card__status-icon {
-          width: 14px;
-          height: 14px;
-          color: var(--text-muted);
+          width: 12px;
+          height: 12px;
+          flex-shrink: 0;
+          color: #22c55e;
         }
         .ai-study-document-card__new {
-          position: absolute;
-          top: 10px;
-          right: 10px;
+          flex-shrink: 0;
           width: auto;
           padding: 3px 7px;
           font-size: 9px;
@@ -1732,16 +1770,34 @@ export default function RightPanel({
               </ul>
             </section>
             <section className="ai-recent-sessions" aria-labelledby="ai-recent-sessions-title">
-              <h4 className="ai-recent-sessions__title" id="ai-recent-sessions-title">Recent Sessions</h4>
-              <button type="button" className="btn btn-secondary ai-study-history-link" onClick={openHistory}>
-                View History &rarr;
-              </button>
+              <div className="ai-recent-sessions__header">
+                <h4 className="ai-recent-sessions__title" id="ai-recent-sessions-title">Recent Sessions</h4>
+                <button type="button" className="btn btn-secondary ai-study-history-link" onClick={openHistory}>
+                  View History &rarr;
+                </button>
+              </div>
             </section>
           </div>
         ) : (
           <>
             <p className="ai-study-tagline">Study smarter with AI.</p>
             <div className="ai-study-document-card">
+              <svg className="ai-study-document-card__file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M6 2h8l4 4v16H6z" />
+                <path d="M14 2v5h5" />
+                <path d="M9 13h6M9 17h4" />
+              </svg>
+              <div className="ai-study-document-card__content">
+                <span className="ai-study-document-card__name" title={uploadedDoc.filename}>
+                  {uploadedDoc.filename}
+                </span>
+                <span className="ai-study-document-card__status">
+                  <svg className="ai-study-document-card__status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Ready for AI
+                </span>
+              </div>
               <button
                 type="button"
                 className="btn btn-secondary ai-study-document-card__new"
@@ -1749,15 +1805,6 @@ export default function RightPanel({
               >
                 New
               </button>
-              <span className="ai-study-document-card__name" title={uploadedDoc.filename}>
-                {uploadedDoc.filename}
-              </span>
-              <span className="ai-study-document-card__status">
-                <svg className="ai-study-document-card__status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-                Ready for AI
-              </span>
             </div>
 
             <div className="ai-quick-study">
@@ -1770,11 +1817,13 @@ export default function RightPanel({
               </div>
             </div>
 
-            <section className="ai-recent-sessions" aria-labelledby="ai-session-history-title">
-              <h4 className="ai-recent-sessions__title" id="ai-session-history-title">Recent Sessions</h4>
-              <button type="button" className="btn btn-secondary ai-study-history-link" onClick={openHistory}>
-                View History &rarr;
-              </button>
+            <section className="ai-recent-sessions ai-recent-sessions--selected" aria-labelledby="ai-session-history-title">
+              <div className="ai-recent-sessions__header">
+                <h4 className="ai-recent-sessions__title" id="ai-session-history-title">Recent Sessions</h4>
+                <button type="button" className="btn btn-secondary ai-study-history-link" onClick={openHistory}>
+                  View History &rarr;
+                </button>
+              </div>
             </section>
 
             {/* Tabbed Content Area */}

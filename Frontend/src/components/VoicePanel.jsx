@@ -68,6 +68,8 @@ export default function VoicePanel({
   const [screenShareViewMode, setScreenShareViewMode] = useState('focused');
   const [focusedScreenShareUserId, setFocusedScreenShareUserId] = useState(null);
   const [fullscreenShareUserId, setFullscreenShareUserId] = useState(null);
+  const [screenShareModalOpen, setScreenShareModalOpen] = useState(false);
+  const [shareSystemAudio, setShareSystemAudio] = useState(true);
 
   const participantsRef = useRef(participants);
   const previousRemoteShareIdsRef = useRef([]);
@@ -87,6 +89,18 @@ export default function VoicePanel({
 
   const activeParticipants = isJoinedHere ? (voiceSession.participants || []) : participants;
   const activeLoading = isJoinedHere ? voiceSession.loading : loading;
+
+  useEffect(() => {
+    if (!screenShareModalOpen) return undefined;
+
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') {
+        setScreenShareModalOpen(false);
+      }
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [screenShareModalOpen]);
   const remoteSharingParticipants = activeParticipants.filter((participant) => (
     participant.user_id !== userId
     && voiceSession.remoteScreenShareStates?.[participant.user_id]
@@ -293,8 +307,20 @@ export default function VoicePanel({
   };
 
   const handleLeave = async () => {
+    setScreenShareModalOpen(false);
     await voiceSession.handleLeave();
     fetchParticipants();
+  };
+
+  const openScreenShareModal = () => {
+    setShareSystemAudio(true);
+    setScreenShareModalOpen(true);
+  };
+
+  const handleConfirmScreenShare = async (event) => {
+    event.preventDefault();
+    setScreenShareModalOpen(false);
+    await voiceSession.handleStartScreenShare({ shareSystemAudio });
   };
 
   const formatJoinTime = (dateString) => {
@@ -499,6 +525,48 @@ export default function VoicePanel({
           100% { opacity: 0.5; }
         }
       `}</style>
+      {screenShareModalOpen && (
+        <div
+          className="modal-overlay"
+          onClick={() => setScreenShareModalOpen(false)}
+        >
+          <form
+            className="modal-card screen-share-options-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="screen-share-options-title"
+            onSubmit={handleConfirmScreenShare}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="modal-card__title" id="screen-share-options-title">
+              Share Screen
+            </h3>
+            <label className="screen-share-options-modal__option">
+              <input
+                type="checkbox"
+                checked={shareSystemAudio}
+                onChange={(event) => setShareSystemAudio(event.target.checked)}
+              />
+              <span>
+                <strong>Share system audio</strong>
+                <small>Include audio playing from the shared screen when supported.</small>
+              </span>
+            </label>
+            <div className="modal-card__actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setScreenShareModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary">
+                Start Sharing
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
       {/* Header */}
       <div className="voice-panel__header">
         {onMobileBack && (
@@ -641,7 +709,7 @@ export default function VoicePanel({
               className={`voice-panel__btn voice-panel__btn--screen ${voiceSession.isScreenSharing ? 'voice-panel__btn--screen-on' : ''}`}
               onClick={voiceSession.isScreenSharing
                 ? () => voiceSession.handleStopScreenShare()
-                : voiceSession.handleStartScreenShare}
+                : openScreenShareModal}
               disabled={voiceSession.screenShareBusy || voiceSession.cameraBusy}
               title={voiceSession.isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
             >

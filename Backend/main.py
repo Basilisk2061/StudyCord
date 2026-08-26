@@ -99,19 +99,24 @@ from lifecycle import (
     LifecycleTargetError,
     parse_message_deletion_targets,
 )
+from llm import (
+    ProviderConfigurationError,
+    ProviderGenerationError,
+    ProviderManager,
+)
 from pinning import PinResponse, PinnedMessageSummary, shape_pinned_messages
-
-# OpenRouter LLM import
-from langchain_openai import ChatOpenAI
 
 # Map GEMINI_API_KEY to GOOGLE_API_KEY for langchain-google-genai compatibility
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY and not os.getenv("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 
-# Load OpenRouter configuration
+# Load LLM provider configuration
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL")
+llm_provider_manager = ProviderManager.from_environment()
 
 # =====================================================================
 # STARTUP LOGGING — safe, never prints secrets
@@ -127,9 +132,33 @@ if OPENROUTER_API_KEY:
     masked = f"{OPENROUTER_API_KEY[:8]}...{OPENROUTER_API_KEY[-4:]}"
     print(f"[BACKEND] [OK] OPENROUTER_API_KEY loaded ({masked}).")
 else:
-    print("[BACKEND] [!!] WARNING: OPENROUTER_API_KEY is not configured -- generation will fail.")
+    print("[BACKEND] [!!] WARNING: OPENROUTER_API_KEY is not configured -- fallback generation will fail.")
 
-print(f"[BACKEND] OpenRouter model: {OPENROUTER_MODEL}")
+if NVIDIA_API_KEY:
+    print("[BACKEND] [OK] NVIDIA_API_KEY loaded.")
+else:
+    print("[BACKEND] [!!] WARNING: NVIDIA_API_KEY is not configured.")
+print("-" * 36)
+print("Primary LLM:")
+print(
+    llm_provider_manager.display_name_for(
+        llm_provider_manager.primary_provider
+    )
+)
+print()
+print("Fallback:")
+print(
+    llm_provider_manager.display_name_for(
+        llm_provider_manager.fallback_provider
+    )
+)
+print()
+print("NVIDIA Model:")
+print(llm_provider_manager.model_for("nvidia") or "<not configured>")
+print()
+print("OpenRouter Model:")
+print(llm_provider_manager.model_for("openrouter") or "<not configured>")
+print("-" * 36)
 print("=" * 60)
 
 METERED_DOMAIN = os.getenv("METERED_DOMAIN", "studycord.metered.live")
@@ -181,66 +210,65 @@ app.add_middleware(
 
 
 # =====================================================================
-# OPENROUTER HELPER
+# LLM GENERATION ERROR HANDLING
 # =====================================================================
 
-def get_rag_chat_model(temperature: float = 0.3) -> ChatOpenAI:
+def _handle_llm_error(e: Exception, endpoint: str) -> HTTPException:
     """
-    Returns a ChatOpenAI instance routed through OpenRouter.
-    Temperature can be tuned per-task (lower for structured, higher for chat).
-    """
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="OPENROUTER_API_KEY is not configured on the backend. Please add it to Backend/.env"
-        )
-
-    return ChatOpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
-        model=OPENROUTER_MODEL,
-        temperature=temperature,
-        request_timeout=120,
-        default_headers={
-            "HTTP-Referer": "http://localhost:5173",
-            "X-Title": "StudyCord",
-        },
-    )
-
-
-def _handle_openrouter_error(e: Exception, endpoint: str) -> HTTPException:
-    """
-    Translates OpenRouter / upstream errors into friendly frontend messages.
+    Translates provider-neutral generation errors into existing API responses.
     Returns an HTTPException ready to be raised.
     """
-    error_str = str(e).lower()
-    detail_raw = str(e)
-
-    # Try to extract status code from the error
-    status_code = 500
-
-    if "401" in error_str or "invalid api key" in error_str or "unauthorized" in error_str:
-        status_code = 401
-        detail = "OpenRouter API key is invalid or expired. Please check your OPENROUTER_API_KEY in Backend/.env."
-    elif "402" in error_str or "insufficient" in error_str or "payment" in error_str or "credits" in error_str:
-        status_code = 402
-        detail = "OpenRouter account has insufficient credits. Please add credits or switch to a free model."
-    elif "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
-        status_code = 429
-        detail = "Rate limit reached on the AI model. Please wait a moment and try again."
-    elif "timeout" in error_str or "timed out" in error_str:
-        status_code = 504
-        detail = "The AI model took too long to respond. Please try again."
-    elif "model" in error_str and ("not found" in error_str or "unavailable" in error_str or "not available" in error_str):
-        status_code = 503
-        detail = f"The selected AI model ({OPENROUTER_MODEL}) is currently unavailable. Please try again later or change the model in Backend/.env."
-    elif "content" in error_str and ("filter" in error_str or "safety" in error_str or "moderation" in error_str):
-        status_code = 422
-        detail = "The AI model refused to generate a response for this content. Please try rephrasing your request."
+    provider = getattr(e, "provider", "llm")
+    if isinstance(e, ProviderConfigurationError):
+        status_code = 500
+        detail = "The AI provider is not configured on the backend."
+    elif isinstance(e, ProviderGenerationError):
+        upstream_status = e.status_code
+        cause_text = str(e.__cause__ or "").lower()
+        if upstream_status == 401 or "invalid api key" in cause_text:
+            status_code = 401
+            detail = "The AI provider API key is invalid or expired."
+        elif upstream_status == 402:
+            status_code = 402
+            detail = "The AI provider account has insufficient credits."
+        elif upstream_status == 429 or e.category == "quota_exceeded":
+            status_code = 429
+            detail = "Rate limit reached on the AI model. Please wait a moment and try again."
+        elif e.category == "timeout":
+            status_code = 504
+            detail = "The AI model took too long to respond. Please try again."
+        elif e.category == "connection_error":
+            status_code = 503
+            detail = "The AI provider could not be reached. Please try again."
+        elif upstream_status in {500, 502, 503, 504}:
+            status_code = 503
+            detail = "The selected AI model is currently unavailable. Please try again later."
+        elif "content" in cause_text and any(
+            word in cause_text for word in ("filter", "safety", "moderation")
+        ):
+            status_code = 422
+            detail = "The AI model refused to generate a response for this content. Please try rephrasing your request."
+        else:
+            status_code = 500
+            detail = "AI generation failed. Please try again."
     else:
-        detail = f"AI generation failed. Please try again. (Error: {detail_raw[:200]})"
+        error_str = str(e).lower()
+        status_code = 500
+        if "401" in error_str or "invalid api key" in error_str or "unauthorized" in error_str:
+            status_code = 401
+            detail = "The AI provider API key is invalid or expired."
+        elif "content" in error_str and any(
+            word in error_str for word in ("filter", "safety", "moderation")
+        ):
+            status_code = 422
+            detail = "The AI model refused to generate a response for this content. Please try rephrasing your request."
+        else:
+            detail = "AI generation failed. Please try again."
 
-    print(f"[{endpoint}] OpenRouter error — status={status_code}, detail={detail}")
+    print(
+        f"[{endpoint}] LLM error - provider={provider}, "
+        f"status={status_code}, type={type(e).__name__}"
+    )
     return HTTPException(status_code=status_code, detail=detail)
 
 
@@ -2007,7 +2035,10 @@ async def rag_chat(
     user=Depends(get_current_user),
 ):
     endpoint = "RAG-CHAT"
-    print(f"[{endpoint}] Request received — model={OPENROUTER_MODEL}")
+    print(
+        f"[{endpoint}] Request received - "
+        f"primary_provider={llm_provider_manager.primary_provider}"
+    )
     start_time = time.time()
 
     doc_data = _resolve_request_document(user["id"], request.doc_id)
@@ -2034,12 +2065,12 @@ async def rag_chat(
         contextualization_fallback = False
         if request.history:
             try:
-                contextualizer = get_rag_chat_model(temperature=0)
-                rewrite_response = await contextualizer.ainvoke(
+                rewrite_response = await llm_provider_manager.generate(
                     build_contextualization_messages(
                         request.history,
                         request.question,
-                    )
+                    ),
+                    temperature=0,
                 )
                 rewritten_query = usable_retrieval_query(
                     rewrite_response.content
@@ -2067,7 +2098,6 @@ async def rag_chat(
         docs = db.similarity_search(retrieval_query, k=RAG_RETRIEVAL_K)
         context = "\n\n".join([doc.page_content for doc in docs])
         
-        chat = get_rag_chat_model(temperature=0.3)
         prompt = build_grounded_answer_messages(
             context,
             request.history,
@@ -2075,7 +2105,11 @@ async def rag_chat(
         )
         
         try:
-            answer = await generate_grounded_answer(chat, prompt)
+            answer = await generate_grounded_answer(
+                llm_provider_manager.generate,
+                prompt,
+                temperature=0.3,
+            )
         except RagChatProviderResponseError as provider_response_error:
             response_kind = (
                 "blocked"
@@ -2104,13 +2138,13 @@ async def rag_chat(
         )
 
         elapsed = time.time() - start_time
-        print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s - GENERATED")
         return result
     except HTTPException:
         raise
     except Exception as e:
         print(f"[{endpoint}] Error: {str(e)}")
-        raise _handle_openrouter_error(e, endpoint)
+        raise _handle_llm_error(e, endpoint)
 
 
 @app.post("/api/rag/summary")
@@ -2123,7 +2157,7 @@ async def rag_summary(
 
     doc_data = _resolve_request_document(user["id"], request.doc_id)
     print(
-        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"[{endpoint}] Request received - primary_provider={llm_provider_manager.primary_provider}, "
         f"doc_id={doc_data.metadata.id[:12]}..."
     )
 
@@ -2140,8 +2174,6 @@ async def rag_summary(
 
     try:
         text = doc_data.text[:50000]  # truncate to stay within safe prompt length
-        chat = get_rag_chat_model(temperature=0.2)
-        
         prompt = (
             "Analyze the provided document text and generate a structured summary. "
             "You MUST reply ONLY with a valid JSON object matching the following structure:\n"
@@ -2159,7 +2191,10 @@ async def rag_summary(
             f"Document Text:\n{text}"
         )
         
-        response = await chat.ainvoke(prompt)
+        response = await llm_provider_manager.generate(
+            prompt,
+            temperature=0.2,
+        )
         parsed_json = parse_json_from_response(response.content)
 
         # Cache the result
@@ -2171,7 +2206,7 @@ async def rag_summary(
         )
 
         elapsed = time.time() - start_time
-        print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s - GENERATED")
         return parsed_json
     except HTTPException:
         raise
@@ -2180,7 +2215,7 @@ async def rag_summary(
         raise HTTPException(status_code=500, detail="The AI model returned a response that could not be parsed. Please try again.")
     except Exception as e:
         print(f"[{endpoint}] Error: {str(e)}")
-        raise _handle_openrouter_error(e, endpoint)
+        raise _handle_llm_error(e, endpoint)
 
 
 @app.post("/api/rag/flashcards")
@@ -2193,7 +2228,7 @@ async def rag_flashcards(
 
     doc_data = _resolve_request_document(user["id"], request.doc_id)
     print(
-        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"[{endpoint}] Request received - primary_provider={llm_provider_manager.primary_provider}, "
         f"doc_id={doc_data.metadata.id[:12]}..."
     )
 
@@ -2210,8 +2245,6 @@ async def rag_flashcards(
 
     try:
         text = doc_data.text[:50000]
-        chat = get_rag_chat_model(temperature=0.3)
-        
         prompt = (
             "Analyze the provided document text and generate a list of 5 to 8 high-quality revision flashcards. "
             "You MUST reply ONLY with a valid JSON array matching the following structure:\n"
@@ -2222,7 +2255,10 @@ async def rag_flashcards(
             f"Document Text:\n{text}"
         )
         
-        response = await chat.ainvoke(prompt)
+        response = await llm_provider_manager.generate(
+            prompt,
+            temperature=0.3,
+        )
         parsed_json = parse_json_from_response(response.content)
         result = {"flashcards": parsed_json}
 
@@ -2235,7 +2271,7 @@ async def rag_flashcards(
         )
 
         elapsed = time.time() - start_time
-        print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s - GENERATED")
         return result
     except HTTPException:
         raise
@@ -2244,7 +2280,7 @@ async def rag_flashcards(
         raise HTTPException(status_code=500, detail="The AI model returned a response that could not be parsed. Please try again.")
     except Exception as e:
         print(f"[{endpoint}] Error: {str(e)}")
-        raise _handle_openrouter_error(e, endpoint)
+        raise _handle_llm_error(e, endpoint)
 
 
 @app.post("/api/rag/mcq")
@@ -2257,7 +2293,7 @@ async def rag_mcq(
 
     doc_data = _resolve_request_document(user["id"], request.doc_id)
     print(
-        f"[{endpoint}] Request received — model={OPENROUTER_MODEL}, "
+        f"[{endpoint}] Request received - primary_provider={llm_provider_manager.primary_provider}, "
         f"doc_id={doc_data.metadata.id[:12]}..."
     )
 
@@ -2274,8 +2310,6 @@ async def rag_mcq(
 
     try:
         text = doc_data.text[:50000]
-        chat = get_rag_chat_model(temperature=0.3)
-        
         prompt = (
             "Analyze the provided document text and generate 5 multiple-choice questions (MCQs) for revision. "
             "Each question must have exactly 4 unique options, and one correct answer (which must exactly match one of the options). "
@@ -2291,7 +2325,10 @@ async def rag_mcq(
             f"Document Text:\n{text}"
         )
         
-        response = await chat.ainvoke(prompt)
+        response = await llm_provider_manager.generate(
+            prompt,
+            temperature=0.3,
+        )
         parsed_json = parse_json_from_response(response.content)
         result = {"mcqs": parsed_json}
 
@@ -2304,7 +2341,7 @@ async def rag_mcq(
         )
 
         elapsed = time.time() - start_time
-        print(f"[{endpoint}] Completed in {elapsed:.2f}s — GENERATED (model={OPENROUTER_MODEL})")
+        print(f"[{endpoint}] Completed in {elapsed:.2f}s - GENERATED")
         return result
     except HTTPException:
         raise
@@ -2313,7 +2350,7 @@ async def rag_mcq(
         raise HTTPException(status_code=500, detail="The AI model returned a response that could not be parsed. Please try again.")
     except Exception as e:
         print(f"[{endpoint}] Error: {str(e)}")
-        raise _handle_openrouter_error(e, endpoint)
+        raise _handle_llm_error(e, endpoint)
 
 if __name__ == "__main__":
     # pyrefly: ignore [missing-import]

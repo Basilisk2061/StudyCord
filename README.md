@@ -69,6 +69,24 @@ cd Frontend
 npm run preview
 ```
 
+## Backend LLM Providers
+
+StudyCord sends generation requests to NVIDIA NIM first and uses the existing
+OpenRouter integration only for eligible transient failures. Configure the
+backend with:
+
+```env
+NVIDIA_API_KEY=your_nvidia_api_key
+NVIDIA_MODEL=your_nvidia_nim_model_id
+PRIMARY_LLM_PROVIDER=nvidia
+FALLBACK_LLM_PROVIDER=openrouter
+```
+
+The existing `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` variables remain the
+fallback provider configuration. Automatic fallback is limited to timeouts,
+connection failures, quota/rate-limit failures, and HTTP 500, 502, 503, or 504
+responses. Invalid credentials and malformed requests do not fall back.
+
 ## 📁 Frontend Structure
 
 - `src/` - React application source files
