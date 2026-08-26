@@ -43,10 +43,15 @@ test('hero presentation preserves the existing document input flow', () => {
   assert.match(rightPanelSource, /onClick=\{\(\) => fileInputRef\.current\?\.click\(\)\}/);
 });
 
-test('uploaded document replaces the hero with an equal-height ready card', () => {
+test('uploaded document replaces the hero with a compact ready header', () => {
   assert.match(rightPanelSource, /className="ai-study-document-card"/);
+  assert.match(rightPanelSource, /ai-study-document-card__file-icon/);
+  assert.match(rightPanelSource, /ai-study-document-card__content/);
   assert.match(rightPanelSource, /Ready for AI/);
-  assert.match(rightPanelSource, /\.ai-study-upload-card,\s*\.ai-study-document-card/);
+  assert.match(rightPanelSource, /height: 56px/);
+  assert.match(rightPanelSource, /min-height: 56px/);
+  assert.match(rightPanelSource, /text-overflow: ellipsis/);
+  assert.match(rightPanelSource, /white-space: nowrap/);
   assert.match(rightPanelSource, /\{uploadedDoc\.filename\}/);
 });
 
@@ -62,6 +67,9 @@ test('quick actions reuse four existing AI modes and keep history secondary', ()
   assert.match(rightPanelSource, /selectTab\('chat'\)[^>]*>Ask Questions/);
   assert.doesNotMatch(rightPanelSource, />Explain Concepts<\/button>/);
   assert.match(rightPanelSource, /View History &rarr;/);
+  assert.match(rightPanelSource, /ai-recent-sessions__header/);
+  assert.match(rightPanelSource, /ai-recent-sessions--selected/);
+  assert.match(rightPanelSource, /margin-top: 22px/);
   assert.match(
     rightPanelSource,
     /className="btn btn-secondary ai-study-history-link" onClick=\{openHistory\}/,

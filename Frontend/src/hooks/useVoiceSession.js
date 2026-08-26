@@ -37,9 +37,11 @@ export function useVoiceSession(userId) {
   const cameraStateUpdatedAtRef = useRef(0);
   const screenStreamRef = useRef(null);
   const screenTrackRef = useRef(null);
+  const screenAudioTrackRef = useRef(null);
   const screenShareStateUpdatedAtRef = useRef(0);
   const peerConnectionsRef = useRef({});
   const videoSendersRef = useRef({});
+  const screenAudioSendersRef = useRef({});
   const remoteStreamsRef = useRef({});
   const remoteCameraStateTimesRef = useRef({});
   const remoteScreenShareStateTimesRef = useRef({});
@@ -188,6 +190,8 @@ export function useVoiceSession(userId) {
       screenStreamRef.current = null;
     }
     screenTrackRef.current = null;
+    screenAudioTrackRef.current = null;
+    screenAudioSendersRef.current = {};
     screenShareStoppingRef.current = false;
     screenShareStateUpdatedAtRef.current = Date.now();
     setIsScreenSharing(false);
@@ -265,6 +269,7 @@ export function useVoiceSession(userId) {
       delete peerConnectionsRef.current[otherUserId];
     }
     delete videoSendersRef.current[otherUserId];
+    delete screenAudioSendersRef.current[otherUserId];
     delete remoteStreamsRef.current[otherUserId];
     delete remoteCameraStateTimesRef.current[otherUserId];
     delete remoteScreenShareStateTimesRef.current[otherUserId];
@@ -464,6 +469,14 @@ export function useVoiceSession(userId) {
       cameraEnabled: cameraEnabledRef.current,
       screenSharing: Boolean(screenTrackRef.current),
     });
+
+    const activeScreenAudioTrack = screenAudioTrackRef.current;
+    if (activeScreenAudioTrack?.readyState === 'live' && screenStreamRef.current) {
+      screenAudioSendersRef.current[otherUserId] = pc.addTrack(
+        activeScreenAudioTrack,
+        screenStreamRef.current,
+      );
+    }
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -898,12 +911,14 @@ export function useVoiceSession(userId) {
 
     const screenStream = screenStreamRef.current;
     const screenTrack = screenTrackRef.current;
+    const screenAudioTrack = screenAudioTrackRef.current;
     const cameraTrack = cameraEnabledRef.current
       && cameraTrackRef.current?.readyState === 'live'
       ? cameraTrackRef.current
       : null;
 
     screenTrackRef.current = null;
+    screenAudioTrackRef.current = null;
     screenStreamRef.current = null;
     screenShareStateUpdatedAtRef.current = Date.now();
     if (screenTrack) {
@@ -913,6 +928,7 @@ export function useVoiceSession(userId) {
     try {
       const replacements = await Promise.allSettled(
         Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+          let negotiationRequired = false;
           const cachedSender = videoSendersRef.current[otherUserId];
           let sender = pc.getTransceivers()
             .find((transceiver) => (
@@ -927,7 +943,18 @@ export function useVoiceSession(userId) {
           } else if (cameraTrack) {
             sender = pc.addTrack(cameraTrack, localStreamRef.current || new MediaStream([cameraTrack]));
             videoSendersRef.current[otherUserId] = sender;
-            await negotiatePeer(otherUserId, 'camera-restored-after-screen-share');
+            negotiationRequired = true;
+          }
+
+          const screenAudioSender = screenAudioSendersRef.current[otherUserId];
+          if (screenAudioSender) {
+            pc.removeTrack(screenAudioSender);
+            delete screenAudioSendersRef.current[otherUserId];
+            negotiationRequired = true;
+          }
+
+          if (negotiationRequired) {
+            await negotiatePeer(otherUserId, 'screen-share-media-removed');
           }
         })
       );
@@ -944,6 +971,13 @@ export function useVoiceSession(userId) {
       if (screenTrack && !screenStream?.getTracks().includes(screenTrack)) {
         screenTrack.stop();
       }
+      if (
+        screenAudioTrack
+        && !screenStream?.getTracks().includes(screenAudioTrack)
+      ) {
+        screenAudioTrack.stop();
+      }
+      screenAudioSendersRef.current = {};
 
       setLocalScreenStream(null);
       setIsScreenSharing(false);
@@ -963,7 +997,7 @@ export function useVoiceSession(userId) {
     stopScreenShareRef.current = handleStopScreenShare;
   }, [handleStopScreenShare]);
 
-  const handleStartScreenShare = useCallback(async () => {
+  const handleStartScreenShare = useCallback(async ({ shareSystemAudio = false } = {}) => {
     if (!isJoinedRef.current || screenTrackRef.current || screenShareBusy || cameraBusy) return;
 
     if (!navigator.mediaDevices?.getDisplayMedia) {
@@ -976,17 +1010,33 @@ export function useVoiceSession(userId) {
 
     let screenStream = null;
     try {
-      screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: false,
-      });
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: Boolean(shareSystemAudio),
+        });
+      } catch (captureError) {
+        const audioConstraintUnsupported = Boolean(shareSystemAudio) && [
+          'NotSupportedError',
+          'OverconstrainedError',
+          'TypeError',
+        ].includes(captureError?.name);
+        if (!audioConstraintUnsupported) throw captureError;
+
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false,
+        });
+      }
       const screenTrack = screenStream.getVideoTracks()[0];
+      const screenAudioTrack = screenStream.getAudioTracks()[0] || null;
       if (!screenTrack) {
         throw new DOMException('No screen video track was returned.', 'NotFoundError');
       }
 
       screenStreamRef.current = screenStream;
       screenTrackRef.current = screenTrack;
+      screenAudioTrackRef.current = screenAudioTrack;
       screenShareStateUpdatedAtRef.current = Date.now();
       screenTrack.onended = () => {
         stopScreenShareRef.current?.();
@@ -994,6 +1044,7 @@ export function useVoiceSession(userId) {
 
       const replacements = await Promise.allSettled(
         Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+          let negotiationRequired = false;
           const cachedSender = videoSendersRef.current[otherUserId];
           let sender = pc.getTransceivers()
             .find((transceiver) => (
@@ -1008,7 +1059,19 @@ export function useVoiceSession(userId) {
           } else {
             sender = pc.addTrack(screenTrack, screenStream);
             videoSendersRef.current[otherUserId] = sender;
-            await negotiatePeer(otherUserId, 'screen-share-track-added');
+            negotiationRequired = true;
+          }
+
+          if (screenAudioTrack) {
+            screenAudioSendersRef.current[otherUserId] = pc.addTrack(
+              screenAudioTrack,
+              screenStream,
+            );
+            negotiationRequired = true;
+          }
+
+          if (negotiationRequired) {
+            await negotiatePeer(otherUserId, 'screen-share-media-added');
           }
         })
       );
@@ -1020,7 +1083,10 @@ export function useVoiceSession(userId) {
         throw new Error('Screen capture ended before it could start.');
       }
 
-      setLocalScreenStream(new MediaStream([screenTrack]));
+      setLocalScreenStream(new MediaStream([
+        screenTrack,
+        ...(screenAudioTrack ? [screenAudioTrack] : []),
+      ]));
       setIsScreenSharing(true);
       await broadcastScreenShareState(true);
     } catch (err) {
@@ -1032,6 +1098,7 @@ export function useVoiceSession(userId) {
         : null;
       await Promise.allSettled(
         Object.entries(peerConnectionsRef.current).map(async ([otherUserId, pc]) => {
+          let negotiationRequired = false;
           const cachedSender = videoSendersRef.current[otherUserId];
           const sender = pc.getTransceivers()
             .find((transceiver) => (
@@ -1042,6 +1109,17 @@ export function useVoiceSession(userId) {
           if (sender) {
             await sender.replaceTrack(cameraTrack);
           }
+
+          const screenAudioSender = screenAudioSendersRef.current[otherUserId];
+          if (screenAudioSender) {
+            pc.removeTrack(screenAudioSender);
+            delete screenAudioSendersRef.current[otherUserId];
+            negotiationRequired = true;
+          }
+
+          if (negotiationRequired) {
+            await negotiatePeer(otherUserId, 'screen-share-start-rolled-back');
+          }
         })
       );
 
@@ -1051,6 +1129,8 @@ export function useVoiceSession(userId) {
       });
       screenStreamRef.current = null;
       screenTrackRef.current = null;
+      screenAudioTrackRef.current = null;
+      screenAudioSendersRef.current = {};
       screenShareStateUpdatedAtRef.current = Date.now();
       setLocalScreenStream(null);
       setIsScreenSharing(false);
