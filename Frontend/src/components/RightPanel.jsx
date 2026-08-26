@@ -691,6 +691,7 @@ export default function RightPanel({
           padding: 0 16px;
           display: flex;
           flex-direction: column;
+          min-width: 0;
         }
         .right-panel__section-title {
           font-size: 11px;
@@ -851,9 +852,14 @@ export default function RightPanel({
         .ai-study-document-card {
           position: relative;
           border-style: solid;
+          min-width: 0;
+          max-width: 100%;
         }
         .ai-study-document-card__name {
           width: 100%;
+          min-width: 0;
+          max-width: 100%;
+          display: block;
           overflow: hidden;
           color: var(--text-primary);
           font-size: 13px;
@@ -864,6 +870,7 @@ export default function RightPanel({
         .ai-study-document-card__status {
           display: flex;
           align-items: center;
+          justify-content: center;
           gap: 6px;
           color: var(--text-secondary);
           font-size: 11px;
