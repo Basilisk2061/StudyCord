@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://studycord.me/</loc>
+  </url>
+  <url>
+    <loc>https://studycord.me/login</loc>
+  </url>
+  <url>
+    <loc>https://studycord.me/signup</loc>
+  </url>
+  <url>
+    <loc>https://studycord.me/forgot-password</loc>
+  </url>
+  <url>
+    <loc>https://studycord.me/reset-password</loc>
+  </url>
+  <url>
+    <loc>https://studycord.me/auth/callback</loc>
+  </url>
+</urlset>
