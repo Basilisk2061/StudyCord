@@ -137,6 +137,17 @@ METERED_SECRET_KEY = os.getenv("METERED_SECRET_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:5173",
+    "https://study-cord.vercel.app",
+    "https://studycord.me",
+    "https://www.studycord.me",
+)
+ALLOWED_ORIGINS = list(dict.fromkeys(
+    origin.strip().rstrip("/")
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+)) or list(DEFAULT_ALLOWED_ORIGINS)
 
 @asynccontextmanager
 async def application_lifespan(application: FastAPI):
@@ -155,17 +166,7 @@ app = FastAPI(
 # Enable CORS for the frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "https://localhost:5173",
-        "https://127.0.0.1:5173",
-        "https://localhost:5174",
-        "https://127.0.0.1:5174",
-        "https://study-cord.vercel.app",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=(
         r"^https://(?:"
         r"10(?:\.\d{1,3}){3}|"
