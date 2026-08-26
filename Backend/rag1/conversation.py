@@ -203,10 +203,17 @@ def extract_grounded_answer(response: object) -> str:
     return answer
 
 
-async def generate_grounded_answer(model, messages: Sequence[object]) -> str:
+async def generate_grounded_answer(
+    generate,
+    messages: Sequence[object],
+    **generation_options,
+) -> str:
     """Generate once, retrying only one malformed non-blocked response."""
     for attempt in range(2):
-        response = await model.ainvoke(messages)
+        response = await generate(
+            messages,
+            **generation_options,
+        )
         try:
             return extract_grounded_answer(response)
         except RagChatProviderResponseError as error:

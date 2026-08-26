@@ -12,9 +12,9 @@ production RAG API, prompts, authentication, persistence, or FAISS settings.
 - Persistent restoration: the existing ownership-safe `resolve_rag_document`
 - Retrieval: ranked `similarity_search`, top 4 chunks
 - Contextualization: the existing bounded-history rewrite prompt, using the
-  configured OpenRouter model at temperature 0
+  configured primary LLM provider (with eligible fallback) at temperature 0
 - Answer generation: the existing grounded answer prompt, using the configured
-  OpenRouter model at temperature 0.3
+  primary LLM provider (with eligible fallback) at temperature 0.3
 
 The evaluator deliberately bypasses the process-local generated-answer cache so
 every measured case performs contextualization, retrieval, and answer

@@ -46,7 +46,7 @@ class FakeChatResponse:
 
 
 class FakeChatModel:
-    async def ainvoke(self, prompt):
+    async def ainvoke(self, prompt, **_kwargs):
         if "revision flashcards" in prompt:
             return FakeChatResponse(
                 '[{"question":"What persisted?",'
@@ -172,7 +172,11 @@ class Rag1RestorationTests(unittest.TestCase):
                 "rag1.service._load_vector_store",
                 return_value=restored_store,
             ) as load_vector_store,
-            patch("main.get_rag_chat_model", return_value=FakeChatModel()),
+            patch.object(
+                main.llm_provider_manager,
+                "generate",
+                side_effect=FakeChatModel().ainvoke,
+            ),
             TestClient(main.app) as client,
         ):
             responses = [
