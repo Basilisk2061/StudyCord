@@ -49,15 +49,23 @@ class ProviderManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_nvidia_success_returns_without_openrouter(self):
         nvidia = ControlledProvider("nvidia", response="nvidia-response")
         openrouter = ControlledProvider("openrouter", response="fallback")
+        output = io.StringIO()
 
-        result = await self.manager(nvidia, openrouter).generate(
-            "prompt",
-            temperature=0.2,
-        )
+        with redirect_stdout(output):
+            result = await self.manager(nvidia, openrouter).generate(
+                "prompt",
+                temperature=0.2,
+            )
 
         self.assertEqual(result, "nvidia-response")
         self.assertEqual(nvidia.calls, [("prompt", 0.2)])
         self.assertEqual(openrouter.calls, [])
+        self.assertIn("LLM Provider: NVIDIA", output.getvalue())
+        self.assertIn("Model: nvidia-model", output.getvalue())
+        self.assertRegex(
+            output.getvalue(),
+            r"Generation Time: \d+\.\d{2} ms",
+        )
 
     async def test_nvidia_timeout_uses_openrouter(self):
         nvidia = ControlledProvider("nvidia", error=TimeoutError("slow"))
@@ -78,8 +86,14 @@ class ProviderManagerTests(unittest.IsolatedAsyncioTestCase):
             result = await self.manager(nvidia, openrouter).generate("prompt")
 
         self.assertEqual(result, "fallback")
-        self.assertIn("NVIDIA failed (429)", output.getvalue())
+        self.assertIn("NVIDIA generation failed.", output.getvalue())
+        self.assertIn(
+            "Reason: nvidia generation failed (429)",
+            output.getvalue(),
+        )
         self.assertIn("Switching to OpenRouter...", output.getvalue())
+        self.assertIn("LLM Provider: OpenRouter", output.getvalue())
+        self.assertIn("Model: openrouter-model", output.getvalue())
 
     async def test_transient_server_errors_use_openrouter(self):
         for status_code in (500, 502, 503, 504):

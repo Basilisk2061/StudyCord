@@ -20,6 +20,7 @@ PROVIDER_DISPLAY_NAMES = {
     "nvidia": "NVIDIA",
     "openrouter": "OpenRouter",
 }
+LOG_SEPARATOR = "-" * 36
 
 
 def _provider_name(value: str | None, *, default: str) -> str:
@@ -79,6 +80,16 @@ class ProviderManager:
     def model_for(self, provider_name: str) -> str:
         return self._providers[provider_name].model
 
+    def display_name_for(self, provider_name: str) -> str:
+        return PROVIDER_DISPLAY_NAMES[provider_name]
+
+    @staticmethod
+    def _log_provider(provider: LLMProvider) -> None:
+        print(LOG_SEPARATOR)
+        print(f"LLM Provider: {PROVIDER_DISPLAY_NAMES[provider.name]}")
+        print(f"Model: {provider.model or '<not configured>'}")
+        print(LOG_SEPARATOR)
+
     async def generate(
         self,
         prompt: Any,
@@ -87,13 +98,13 @@ class ProviderManager:
     ) -> Any:
         primary = self._providers[self.primary_provider]
         primary_display_name = PROVIDER_DISPLAY_NAMES[primary.name]
-        print(f"LLM Provider: {primary_display_name}")
+        self._log_provider(primary)
         started = perf_counter()
         try:
             response = await primary.generate(prompt, temperature=temperature)
         except ProviderGenerationError as error:
-            elapsed = perf_counter() - started
-            print(f"Generation Time: {elapsed:.2f}s")
+            elapsed_ms = (perf_counter() - started) * 1_000
+            print(f"Generation Time: {elapsed_ms:.2f} ms")
             if (
                 not error.retryable_with_fallback
                 or self.fallback_provider == self.primary_provider
@@ -102,11 +113,11 @@ class ProviderManager:
 
             fallback = self._providers[self.fallback_provider]
             fallback_display_name = PROVIDER_DISPLAY_NAMES[fallback.name]
-            print(
-                f"{primary_display_name} failed ({error.safe_reason})"
-            )
+            print(LOG_SEPARATOR)
+            print(f"{primary_display_name} generation failed.")
+            print(f"Reason: {error}")
             print(f"Switching to {fallback_display_name}...")
-            print(f"LLM Provider: {fallback_display_name}")
+            self._log_provider(fallback)
             fallback_started = perf_counter()
             try:
                 response = await fallback.generate(
@@ -114,10 +125,10 @@ class ProviderManager:
                     temperature=temperature,
                 )
             finally:
-                fallback_elapsed = perf_counter() - fallback_started
-                print(f"Generation Time: {fallback_elapsed:.2f}s")
+                fallback_elapsed_ms = (perf_counter() - fallback_started) * 1_000
+                print(f"Generation Time: {fallback_elapsed_ms:.2f} ms")
             return response
         else:
-            elapsed = perf_counter() - started
-            print(f"Generation Time: {elapsed:.2f}s")
+            elapsed_ms = (perf_counter() - started) * 1_000
+            print(f"Generation Time: {elapsed_ms:.2f} ms")
             return response

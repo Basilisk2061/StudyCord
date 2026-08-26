@@ -134,17 +134,31 @@ if OPENROUTER_API_KEY:
 else:
     print("[BACKEND] [!!] WARNING: OPENROUTER_API_KEY is not configured -- fallback generation will fail.")
 
-print(f"[BACKEND] OpenRouter model: {OPENROUTER_MODEL}")
 if NVIDIA_API_KEY:
     print("[BACKEND] [OK] NVIDIA_API_KEY loaded.")
 else:
     print("[BACKEND] [!!] WARNING: NVIDIA_API_KEY is not configured.")
-print(f"[BACKEND] NVIDIA model: {NVIDIA_MODEL or '<not configured>'}")
+print("-" * 36)
+print("Primary LLM:")
 print(
-    "[BACKEND] LLM routing: "
-    f"{llm_provider_manager.primary_provider} -> "
-    f"{llm_provider_manager.fallback_provider}"
+    llm_provider_manager.display_name_for(
+        llm_provider_manager.primary_provider
+    )
 )
+print()
+print("Fallback:")
+print(
+    llm_provider_manager.display_name_for(
+        llm_provider_manager.fallback_provider
+    )
+)
+print()
+print("NVIDIA Model:")
+print(llm_provider_manager.model_for("nvidia") or "<not configured>")
+print()
+print("OpenRouter Model:")
+print(llm_provider_manager.model_for("openrouter") or "<not configured>")
+print("-" * 36)
 print("=" * 60)
 
 METERED_DOMAIN = os.getenv("METERED_DOMAIN", "studycord.metered.live")
