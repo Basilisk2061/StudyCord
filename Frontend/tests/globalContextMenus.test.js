@@ -19,13 +19,14 @@ const dashboardSource = await readFile(
   'utf8',
 );
 
-test('shared menu hook handles outside clicks, Escape, actions, and competing menus', () => {
+test('shared menu hook handles outside clicks, Escape, and competing menus', () => {
   assert.match(hookSource, /document\.addEventListener\('pointerdown', handlePointerDown, true\)/);
   assert.match(hookSource, /rootRef\.current\?\.contains\(event\.target\)/);
   assert.match(hookSource, /event\.key === 'Escape'/);
-  assert.match(hookSource, /closest\('\[role="menuitem"\]'\)/);
   assert.match(hookSource, /MENU_OPEN_EVENT/);
   assert.match(hookSource, /event\.detail\?\.menuId !== menuId/);
+  assert.doesNotMatch(hookSource, /addEventListener\('click'/);
+  assert.doesNotMatch(hookSource, /closest\('\[role="menuitem"\]'\)/);
 });
 
 test('server and message menus use the shared dismissable primitive', () => {
