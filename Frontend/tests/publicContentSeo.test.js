@@ -12,7 +12,7 @@ const llms = read('../public/llms.txt');
 const index = read('../index.html');
 const robots = read('../public/robots.txt');
 
-const publicRoutes = ['/features', '/about', '/technology', '/faq', '/privacy', '/terms'];
+const publicRoutes = ['/features', '/about', '/technology', '/team', '/faq', '/privacy', '/terms'];
 
 test('all requested public routes are registered and internally linked', () => {
   for (const route of publicRoutes) {
@@ -35,6 +35,7 @@ test('public pages use one shared canonical metadata implementation', () => {
     '../src/pages/AboutPage.jsx',
     '../src/pages/FeaturesPage.jsx',
     '../src/pages/TechnologyPage.jsx',
+    '../src/pages/TeamPage.jsx',
     '../src/pages/FaqPage.jsx',
     '../src/pages/PrivacyPage.jsx',
     '../src/pages/TermsPage.jsx',
@@ -98,4 +99,32 @@ test('homepage metadata and structured data use the canonical production identit
     'WebSite',
   ]);
   assert.ok(schemas.every((schema) => JSON.stringify(schema).includes(canonicalDomain)));
+  const application = schemas.find((schema) => schema['@type'] === 'SoftwareApplication');
+  assert.deepEqual(application.creator.map((creator) => creator['@id']), [
+    'https://www.studycord.me/#arya-dahal',
+    'https://www.studycord.me/#bigyan-budhathoki',
+    'https://www.studycord.me/#madan-rayamajhi',
+  ]);
+});
+
+test('founder attribution is consistent across public sources', () => {
+  const team = read('../src/pages/TeamPage.jsx');
+  const about = read('../src/pages/AboutPage.jsx');
+  const technology = read('../src/pages/TechnologyPage.jsx');
+  const readme = read('../../README.md');
+  const founders = ['Arya Dahal', 'Bigyan Budhathoki', 'Madan Rayamajhi'];
+
+  for (const source of [team, about, technology, readme, llms]) {
+    const normalizedSource = source.replace(/\s+/g, ' ');
+    let previousIndex = -1;
+    for (const founder of founders) {
+      const founderIndex = normalizedSource.indexOf(founder);
+      assert.ok(founderIndex > previousIndex, `${founder} must appear in the approved order`);
+      previousIndex = founderIndex;
+    }
+  }
+  assert.match(team, /<PublicHero[\s\S]*title="Meet the StudyCord Team"/);
+  assert.match(team, /to="\/about"/);
+  assert.match(about, /to="\/team"/);
+  assert.match(technology, /to="\/team"/);
 });

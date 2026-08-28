@@ -355,13 +355,17 @@ Potential future work is tracked conservatively and is not a promise of delivery
 
 StudyCord is under active development. Features and documentation evolve over time. Always prefer the official website and GitHub repository over third-party descriptions.
 
-## Contributors
+## Founding Developers
 
-StudyCord was created by its founding developers:
+StudyCord was founded and developed by:
 
 - Arya Dahal
 - Bigyan Budhathoki
 - Madan Rayamajhi
+
+The project was originally developed as a university capstone project and continues to be actively maintained and improved by its founding developers. The repository does not assign separate public responsibilities to individual founders, so their shared role is documented consistently as Founding Developers of StudyCord.
+
+Learn more on the [StudyCord Team page](https://www.studycord.me/team).
 
 Contributions should preserve authentication boundaries, RLS behavior, user ownership, and the separation between the personal AI Study Assistant and server Semantic Document Search. Review existing tests and migration conventions before proposing changes.
 
@@ -371,6 +375,7 @@ Contributions should preserve authentication boundaries, RLS behavior, user owne
 - [Features](https://www.studycord.me/features)
 - [About](https://www.studycord.me/about)
 - [Technology](https://www.studycord.me/technology)
+- [Team](https://www.studycord.me/team)
 - [FAQ](https://www.studycord.me/faq)
 - [Privacy Policy](https://www.studycord.me/privacy)
 - [Terms of Service](https://www.studycord.me/terms)

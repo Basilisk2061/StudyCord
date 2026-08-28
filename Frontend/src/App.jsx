@@ -9,6 +9,7 @@ import AuthCallbackPage from './pages/AuthCallbackPage';
 import AboutPage from './pages/AboutPage';
 import FeaturesPage from './pages/FeaturesPage';
 import TechnologyPage from './pages/TechnologyPage';
+import TeamPage from './pages/TeamPage';
 import FaqPage from './pages/FaqPage';
 import PrivacyPage from './pages/PrivacyPage';
 import TermsPage from './pages/TermsPage';
@@ -34,6 +35,7 @@ function App() {
           <Route path="/about" element={<AboutPage />} />
           <Route path="/features" element={<FeaturesPage />} />
           <Route path="/technology" element={<TechnologyPage />} />
+          <Route path="/team" element={<TeamPage />} />
           <Route path="/faq" element={<FaqPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/terms" element={<TermsPage />} />

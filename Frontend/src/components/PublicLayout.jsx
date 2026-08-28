@@ -2,9 +2,10 @@ import { Link, NavLink } from 'react-router-dom';
 import Seo from './Seo';
 
 const NAV_ITEMS = [
-  ['/features', 'Features'],
   ['/about', 'About'],
+  ['/features', 'Features'],
   ['/technology', 'Technology'],
+  ['/team', 'Team'],
   ['/faq', 'FAQ'],
 ];
 
@@ -41,9 +42,10 @@ export default function PublicLayout({ seo, children }) {
             <p>An AI-powered student collaboration platform for learning together.</p>
           </div>
           <nav aria-label="Product links">
-            <Link to="/features">Features</Link>
             <Link to="/about">About</Link>
+            <Link to="/features">Features</Link>
             <Link to="/technology">Technology</Link>
+            <Link to="/team">Team</Link>
             <Link to="/faq">FAQ</Link>
           </nav>
           <nav aria-label="Legal and project links">
@@ -78,4 +80,3 @@ export function PublicSection({ id, eyebrow, title, children }) {
     </section>
   );
 }
-

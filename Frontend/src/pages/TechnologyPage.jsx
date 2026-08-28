@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import PublicLayout, { PublicHero, PublicSection } from '../components/PublicLayout';
 
 const SEO = {
@@ -165,6 +166,14 @@ export default function TechnologyPage() {
           vector data. Environment variables provide deployment-specific URLs and credentials;
           secrets are not embedded in public frontend code or this documentation.
         </p>
+      </PublicSection>
+
+      <PublicSection eyebrow="Project leadership" title="Built and maintained by the founding team">
+        <p>
+          StudyCord was founded and developed by Arya Dahal, Bigyan Budhathoki, and Madan
+          Rayamajhi. They continue to maintain and improve the project.
+        </p>
+        <p><Link to="/team">Meet the StudyCord team</Link>.</p>
       </PublicSection>
     </PublicLayout>
   );
