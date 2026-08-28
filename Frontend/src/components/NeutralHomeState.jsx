@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import AuthCharacters from './AuthCharacters';
 
 const CAPABILITIES = [
@@ -93,6 +94,33 @@ export default function NeutralHomeState({
           <span aria-hidden="true">→</span>
           <span>Start studying</span>
         </div>
+
+        <footer className="neutral-home__footer">
+          <nav className="neutral-home__footer-links" aria-label="StudyCord information">
+            <Link to="/about">About</Link>
+            <Link to="/features">Features</Link>
+            <Link to="/technology">Technology</Link>
+            <Link to="/faq">FAQ</Link>
+            <a
+              href="https://github.com/Basilisk2061/StudyCord"
+              target="_blank"
+              rel="noreferrer"
+            >
+              GitHub
+            </a>
+          </nav>
+          <nav
+            className="neutral-home__footer-links neutral-home__footer-links--legal"
+            aria-label="Legal"
+          >
+            <Link to="/privacy">Privacy</Link>
+            <Link to="/terms">Terms</Link>
+          </nav>
+          <p className="neutral-home__footer-copyright">© 2026 StudyCord</p>
+          <p className="neutral-home__footer-subtitle">
+            AI-Powered Student Collaboration Platform
+          </p>
+        </footer>
       </div>
     </div>
   );

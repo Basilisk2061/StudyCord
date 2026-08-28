@@ -32,3 +32,15 @@ test('neutral home reuses the existing sidebar Create and Join modals', async ()
   assert.match(sidebar, /const result = await onCreateServer\(newServerName\)/);
   assert.match(sidebar, /const result = await onJoinServer\(inviteCode\)/);
 });
+
+test('neutral home footer links to public documentation without changing routes', async () => {
+  const home = await readSource('../src/components/NeutralHomeState.jsx');
+
+  assert.match(home, /<footer className="neutral-home__footer">/);
+  for (const path of ['/about', '/features', '/technology', '/faq', '/privacy', '/terms']) {
+    assert.match(home, new RegExp(`<Link to="${path}">`));
+  }
+  assert.match(home, /href="https:\/\/github\.com\/Basilisk2061\/StudyCord"/);
+  assert.match(home, /target="_blank"/);
+  assert.match(home, /© 2026 StudyCord/);
+});

@@ -1097,7 +1097,7 @@ export default function MainPanel({
               This cannot be undone. It permanently deletes the message and
               its attachment. Any
               linked server resource, chunks, and ratings used only by this
-              message are also removed. Existing private RAG 1 imports remain.
+              message are also removed. Existing personal AI study imports remain.
             </p>
             {deleteError && (
               <div className="settings-error" role="alert">{deleteError}</div>
