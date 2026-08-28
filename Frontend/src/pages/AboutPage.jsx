@@ -17,8 +17,6 @@ const SEO = {
   },
 };
 
-const TEAM = ['Arya Dahal', 'Bigyan Budhathoki', 'Madan Rayamajhi'];
-
 export default function AboutPage() {
   return (
     <PublicLayout seo={SEO}>
@@ -87,16 +85,12 @@ export default function AboutPage() {
       </PublicSection>
 
       <PublicSection eyebrow="Founding team" title="Meet the team">
-        <p>StudyCord was created by three founding developers:</p>
-        <div className="public-card-grid public-card-grid--three public-team-grid">
-          {TEAM.map((name) => (
-            <article className="public-card" key={name}>
-              <div className="public-team-grid__initial" aria-hidden="true">{name.charAt(0)}</div>
-              <h3>{name}</h3>
-              <p>Founding Developer of StudyCord</p>
-            </article>
-          ))}
-        </div>
+        <p>
+          StudyCord was founded and developed by Arya Dahal, Bigyan Budhathoki, and Madan
+          Rayamajhi. The founding developers designed and built StudyCord as an AI-powered student
+          collaboration platform and continue to maintain and improve the project.
+        </p>
+        <p><Link to="/team">Learn more about the StudyCord team</Link>.</p>
       </PublicSection>
 
       <PublicSection eyebrow="Development" title="StudyCord timeline">

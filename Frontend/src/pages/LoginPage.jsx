@@ -142,9 +142,10 @@ export default function LoginPage() {
           </ul>
 
           <nav className="auth-public-nav" aria-label="Learn about StudyCord">
-            <Link to="/features">Features</Link>
             <Link to="/about">About</Link>
+            <Link to="/features">Features</Link>
             <Link to="/technology">Technology</Link>
+            <Link to="/team">Team</Link>
             <Link to="/faq">FAQ</Link>
           </nav>
         </div>

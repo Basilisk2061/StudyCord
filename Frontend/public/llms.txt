@@ -142,9 +142,13 @@ Community ratings do not alter semantic relevance ranking.
 
 ## Founding Developers
 
+StudyCord was founded and developed by:
+
 - Arya Dahal
 - Bigyan Budhathoki
 - Madan Rayamajhi
+
+StudyCord began as a university capstone project. The founding developers continue to actively maintain and improve the project.
 
 ## Documentation
 
@@ -153,6 +157,7 @@ Community ratings do not alter semantic relevance ranking.
 - Features: https://www.studycord.me/features
 - About: https://www.studycord.me/about
 - Technology: https://www.studycord.me/technology
+- Team: https://www.studycord.me/team
 - FAQ: https://www.studycord.me/faq
 - Privacy: https://www.studycord.me/privacy
 - Terms: https://www.studycord.me/terms
