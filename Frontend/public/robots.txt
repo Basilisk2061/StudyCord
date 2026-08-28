@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://studycord.me/sitemap.xml
+Sitemap: https://www.studycord.me/sitemap.xml
