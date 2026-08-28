@@ -48,7 +48,7 @@ test('handoff errors are safe and retry-oriented', () => {
   );
 });
 
-test('Use in RAG 1 appears only inside the successful shared resource viewer', async () => {
+test('Study with AI appears only inside the successful shared resource viewer', async () => {
   const panel = await readFile(
     new URL('../src/components/ResourceAccessPanel.jsx', import.meta.url),
     'utf8',
@@ -57,8 +57,8 @@ test('Use in RAG 1 appears only inside the successful shared resource viewer', a
     new URL('../src/components/ResourceAccessWorkspace.jsx', import.meta.url),
     'utf8',
   );
-  assert.match(panel, /Use in RAG 1/);
-  assert.match(panel, /Adding to RAG 1\.\.\./);
+  assert.match(panel, /Study with AI/);
+  assert.match(panel, /Preparing AI study session\.\.\./);
   assert.match(panel, /!accessState\.loading && !accessState\.error && accessState\.objectUrl/);
   assert.match(panel, /disabled=\{handoffPending\}/);
   assert.match(workspace, /handoffResourceToRag1/);
@@ -87,7 +87,7 @@ test('channel and Advanced Search pass through the same shared handoff callback'
       new URL('../src/components/MessageAttachment.jsx', import.meta.url),
       'utf8',
     ),
-    /Use in RAG 1|handoffResourceToRag1/,
+    /Study with AI|handoffResourceToRag1/,
   );
 });
 

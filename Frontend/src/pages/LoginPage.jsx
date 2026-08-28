@@ -6,6 +6,13 @@ import EtherealBackground from '../components/EtherealBackground';
 import AuthCharacters from '../components/AuthCharacters';
 import GoogleAuthButton from '../components/GoogleAuthButton';
 import { beginGoogleOAuth, normalizeEmail } from '../lib/authFlow';
+import Seo from '../components/Seo';
+
+const HOME_SEO = {
+  title: 'StudyCord – AI-Powered Student Collaboration Platform',
+  description: 'StudyCord brings messaging, voice and video, document sharing, semantic search, and a RAG-powered AI Study Assistant into one student workspace.',
+  path: '/',
+};
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -79,6 +86,7 @@ export default function LoginPage() {
 
   return (
     <EtherealBackground>
+      <Seo {...HOME_SEO} />
       <div className="auth-split auth-split--login">
         {/* Branding Panel */}
         <div className="auth-brand auth-page-transition">
@@ -90,7 +98,7 @@ export default function LoginPage() {
           </p>
 
           <AuthCharacters charState={charState} />
-          <p className="auth-brand__mascot-note">Your study space is ready.</p>
+          <p className="auth-brand__mascot-note">Built for students, study groups, and educators.</p>
 
           <ul className="auth-brand__features">
             <li className="auth-brand__feature">
@@ -132,6 +140,13 @@ export default function LoginPage() {
               </div>
             </li>
           </ul>
+
+          <nav className="auth-public-nav" aria-label="Learn about StudyCord">
+            <Link to="/features">Features</Link>
+            <Link to="/about">About</Link>
+            <Link to="/technology">Technology</Link>
+            <Link to="/faq">FAQ</Link>
+          </nav>
         </div>
 
         {/* Form Panel */}
@@ -212,6 +227,11 @@ export default function LoginPage() {
               Don&apos;t have an account?{' '}
               <Link to="/signup" className="auth-link">Create one</Link>
             </div>
+            <nav className="auth-public-legal" aria-label="StudyCord legal links">
+              <Link to="/privacy">Privacy</Link>
+              <Link to="/terms">Terms</Link>
+              <a href="https://github.com/Basilisk2061/StudyCord">GitHub</a>
+            </nav>
           </div>
         </div>
       </div>

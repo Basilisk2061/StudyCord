@@ -48,7 +48,7 @@ test('message UI exposes deletion to authors and server managers only', async ()
   assert.match(source, /\{isOwnMessage \? 'Delete' : 'Delete Message'\}/);
   assert.match(source, /Delete message\?/);
   assert.match(source, /linked server resource, chunks, and ratings/);
-  assert.match(source, /Existing private RAG 1 imports remain/);
+  assert.match(source, /Existing personal AI study imports remain/);
   assert.match(source, /event: 'DELETE'/);
   assert.match(source, /removeDeletedMessage\(current, deletedMessageId\)/);
   assert.doesNotMatch(source, /\.from\('messages'\)\s*\.delete/);

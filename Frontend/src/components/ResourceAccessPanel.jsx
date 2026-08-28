@@ -147,7 +147,7 @@ export default function ResourceAccessPanel({
                 onClick={onUseInRag1}
                 disabled={handoffPending}
               >
-                {handoffPending ? 'Adding to RAG 1...' : 'Use in RAG 1'}
+                {handoffPending ? 'Preparing AI study session...' : 'Study with AI'}
               </button>
             </div>
             {handoffError && (
