@@ -9,6 +9,8 @@ const layout = read('../src/components/PublicLayout.jsx');
 const seo = read('../src/components/Seo.jsx');
 const sitemap = read('../public/sitemap.xml');
 const llms = read('../public/llms.txt');
+const index = read('../index.html');
+const robots = read('../public/robots.txt');
 
 const publicRoutes = ['/features', '/about', '/technology', '/faq', '/privacy', '/terms'];
 
@@ -73,4 +75,27 @@ test('AI crawler summary identifies sources and keeps personal AI separate from 
   for (const route of publicRoutes) {
     assert.ok(llms.includes(`https://www.studycord.me${route}`));
   }
+});
+
+test('homepage metadata and structured data use the canonical production identity', () => {
+  const canonicalDomain = 'https://www.studycord.me';
+  const schemas = [...index.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)]
+    .map((match) => JSON.parse(match[1]));
+
+  assert.equal((index.match(/<title>/g) || []).length, 1);
+  assert.equal((index.match(/<meta\s+name="description"/g) || []).length, 1);
+  assert.equal((index.match(/<link rel="canonical"/g) || []).length, 1);
+  assert.match(index, /StudyCord – AI-Powered Student Collaboration Platform/);
+  assert.match(index, /AI-powered student collaboration platform/);
+  assert.doesNotMatch(index, /https:\/\/studycord\.me/);
+  assert.doesNotMatch(robots, /https:\/\/studycord\.me/);
+  assert.doesNotMatch(sitemap, /https:\/\/studycord\.me/);
+  assert.doesNotMatch(index, /SearchAction|dashboard\?search/);
+  assert.equal(schemas.length, 3);
+  assert.deepEqual(schemas.map((schema) => schema['@type']), [
+    'SoftwareApplication',
+    'Organization',
+    'WebSite',
+  ]);
+  assert.ok(schemas.every((schema) => JSON.stringify(schema).includes(canonicalDomain)));
 });
