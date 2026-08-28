@@ -82,11 +82,11 @@ export default function LoginPage() {
       <div className="auth-split auth-split--login">
         {/* Branding Panel */}
         <div className="auth-brand auth-page-transition">
-          <div className="auth-brand__logo">
+          <h1 className="auth-brand__logo">
             Study<span className="auth-brand__logo-accent">Cord</span>
-          </div>
+          </h1>
           <p className="auth-brand__tagline">
-            Where study groups stay connected, organized, and focused.
+            AI-powered student collaboration for connected, organized study groups.
           </p>
 
           <AuthCharacters charState={charState} />
@@ -103,8 +103,8 @@ export default function LoginPage() {
                 </svg>
               </div>
               <div className="auth-brand__feature-text">
-                <h4>Study Together</h4>
-                <p>Chat, share resources, and connect with your study group.</p>
+                <h2>Study Together</h2>
+                <p>Use real-time messaging, document sharing, voice, and video calls.</p>
               </div>
             </li>
             <li className="auth-brand__feature">
@@ -115,8 +115,8 @@ export default function LoginPage() {
                 </svg>
               </div>
               <div className="auth-brand__feature-text">
-                <h4>Search Smarter</h4>
-                <p>Find relevant study materials using semantic search.</p>
+                <h2>Search Smarter</h2>
+                <p>Find relevant study materials with semantic document search.</p>
               </div>
             </li>
             <li className="auth-brand__feature">
@@ -127,8 +127,8 @@ export default function LoginPage() {
                 </svg>
               </div>
               <div className="auth-brand__feature-text">
-                <h4>Learn with AI</h4>
-                <p>Generate summaries, answers, flashcards, and revision quizzes.</p>
+                <h2>Learn with AI</h2>
+                <p>Use the RAG-powered AI Study Assistant for answers, summaries, flashcards, and quizzes.</p>
               </div>
             </li>
           </ul>
@@ -138,7 +138,7 @@ export default function LoginPage() {
         <div className="auth-form-panel">
           <div className="auth-card auth-page-transition">
             <div className="auth-header">
-              <h1 className="auth-title">Welcome back</h1>
+              <h2 className="auth-title">Welcome to StudyCord</h2>
               <p className="auth-subtitle">Sign in to your StudyCord account</p>
             </div>
 

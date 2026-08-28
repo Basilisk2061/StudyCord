@@ -1,10 +1,10 @@
 # StudyCord
 
-A collaborative learning platform designed to make studying together easier and more productive.
+[StudyCord](https://www.studycord.me/) is an AI-powered student collaboration platform designed to make studying together easier and more productive.
 
 ## 🚀 Overview
 
-StudyCord is a React + Vite web application for group study sessions, collaborative resource sharing, and community-driven learning.
+StudyCord combines real-time messaging, voice and video communication, document sharing, semantic document search, and a RAG-powered AI Study Assistant for group learning.
 
 ## 🧩 What’s Included
 

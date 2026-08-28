@@ -81,7 +81,7 @@ body {
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.04em;
-  margin-bottom: 10px;
+  margin: 0 0 10px;
 }
 .auth-brand__logo-accent {
   color: #FFFFFF;
@@ -121,7 +121,8 @@ body {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
 }
-.auth-brand__feature-text h4 {
+.auth-brand__feature-text h4,
+.auth-brand__feature-text h2 {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
@@ -3406,7 +3407,8 @@ body {
   border-color: var(--border-subtle);
 }
 
-.auth-split--login .auth-brand__feature-text h4 {
+.auth-split--login .auth-brand__feature-text h4,
+.auth-split--login .auth-brand__feature-text h2 {
   margin-bottom: 3px;
 }
 
