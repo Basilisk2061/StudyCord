@@ -209,6 +209,13 @@ app.add_middleware(
 )
 
 
+# Lightweight process-aliveness probe for Render keep-alive pings,
+# uptime monitoring, and future load balancers.
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
 # =====================================================================
 # LLM GENERATION ERROR HANDLING
 # =====================================================================
